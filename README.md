@@ -1,19 +1,41 @@
 # TrustGate
 
-A Stellar-native task marketplace: requesters list tasks and pay a USDC listing fee,
-executors register on-chain and bid with escrowed collateral, the marketplace selects a
-winner, and payment/escrow settle on completion. Built on Soroban, MPP (Machine Payments
-Protocol), Trustless Work escrow, and the x402 payment protocol.
+**A trustless task marketplace on Stellar.** Requesters post tasks and escrow payment,
+executors bid with collateral, the marketplace picks a winner, and Soroban + escrow
+settle the deal automatically — no middleman holding funds.
+
+```
+requester ──list task, pay fee──▶  marketplace  ◀──register, bid + collateral── executor
+                                        │
+                                  select winner
+                                        │
+                          escrow releases on completion
+```
+
+Built on **Soroban** (on-chain executor registry), **Trustless Work** (bid-collateral
+escrow), **MPP**/**x402** (pay-per-result access), and the **Stellar SDK**.
+
+## Table of contents
+
+- [Stack](#stack)
+- [Quick start](#quick-start-local-network)
+- [Environment variables](#environment-variables)
+- [Testing](#testing)
+- [Docker](#docker-full-stack)
+- [Testnet deployment](#running-against-real-stellar-testnet)
+- [API walkthrough](#example-full-lifecycle-via-curl)
+- [Known limitations](#known-limitations)
 
 ## Stack
 
-- Node.js 20+, TypeScript, Express
-- Soroban smart contract (Registry) — allow-list of executors
-- `@stellar/stellar-sdk` for all Stellar/Soroban interaction
-- Trustless Work for bid-collateral escrow
-- x402 (`@x402/*`) for pay-per-result access to an executor's output
-- Jest + Supertest for unit/integration/e2e tests
-- pino (structured JSON logs) + prom-client (metrics) + swagger-jsdoc/swagger-ui-express (API docs)
+| Layer | Choice |
+|---|---|
+| Runtime | Node.js 20+, TypeScript, Express |
+| On-chain | Soroban `Registry` contract (executor allow-list), `@stellar/stellar-sdk` |
+| Escrow | Trustless Work (bid collateral) |
+| Pay-per-result | x402 (`@x402/*`) + MPP |
+| Tests | Jest + Supertest (unit/integration/e2e) |
+| Ops | pino (logs), prom-client (metrics), swagger-jsdoc/swagger-ui-express (API docs) |
 
 ## Quick start (local network)
 
@@ -24,15 +46,18 @@ npm run deploy:registry       # deploys the Registry contract, writes REGISTRY_C
 npm run start:dev             # http://localhost:3000
 ```
 
-`npm run deploy:registry` also auto-generates and Friendbot-funds a throwaway `ADMIN_SECRET`
-if you don't already have one in `.env`. Copy `.env.example` to `.env` first if you want to
-set values explicitly instead of relying on the defaults.
+That's it — `deploy:registry` also generates and Friendbot-funds a throwaway
+`ADMIN_SECRET` if you don't have one yet. Want explicit control instead? Copy
+`.env.example` to `.env` and fill in values before running the steps above.
 
-Once running:
-- `GET /health` — liveness
-- `GET /health/detailed` — real Stellar RPC + Redis connectivity check
-- `GET /metrics` — Prometheus metrics
-- `GET /api-docs` — Swagger UI, every endpoint documented and testable
+Once it's up:
+
+| Endpoint | What it's for |
+|---|---|
+| `GET /health` | Liveness check |
+| `GET /health/detailed` | Real Stellar RPC + Redis connectivity check |
+| `GET /metrics` | Prometheus metrics |
+| `GET /api-docs` | Swagger UI — every endpoint documented and testable |
 
 ## Environment variables
 
@@ -52,23 +77,22 @@ Once running:
 | `X402_FACILITATOR_URL` | | OZ Channels facilitator URL. |
 | `EXECUTOR_WALLET` | | Recipient for x402 result payments. Defaults to the marketplace wallet. |
 | `EXECUTOR_RESULT_PRICE` | | Price for `GET /executor/tasks/:taskId/result`, e.g. `$0.05`. |
-| `ACCOUNT_WASM_HASH` | | Only for `scripts/deploy-smart-account.ts` — see note below. |
+| `ACCOUNT_WASM_HASH` | | Only for `scripts/deploy-smart-account.ts` — see [Known limitations](#known-limitations). |
 | `REQUESTER_SECRET` | | Only for `scripts/deploy-smart-account.ts`. |
 
-See `.env.example` for the full list with inline comments, and `.env.testnet` for a real
-Stellar-testnet configuration (see below).
+Full list with inline comments in `.env.example`; a ready-made testnet config lives in
+`.env.testnet` (see [testnet section](#running-against-real-stellar-testnet)).
 
 ## Testing
 
 ```bash
 npm test              # unit + integration (skips anything needing real external credentials)
-npm run test:e2e       # full mocked lifecycle: register → publish → bid → select → pay → release
+npm run test:e2e      # full mocked lifecycle: register → publish → bid → select → pay → release
 ```
 
-Integration tests that need real infrastructure (a live local Stellar Quickstart, a real
-Trustless Work API key, a real OZ Channels key) are gated with `describe.skip` and skip
-cleanly when that infrastructure isn't present — they aren't flaky, they're honest about
-what they need.
+Tests that need real infrastructure (a live local Stellar Quickstart, a real Trustless
+Work key, a real OZ Channels key) are gated with `describe.skip` and skip cleanly when
+that infrastructure isn't present — they aren't flaky, they're honest about what they need.
 
 ## Docker (full stack)
 
@@ -78,8 +102,8 @@ curl http://localhost:3000/health
 ```
 
 The `app` service waits for Stellar and Redis to be reachable (`scripts/wait-for-it.sh`)
-before starting, and reads secrets from `.env` via `env_file` while overriding the
-network-specific URLs to the in-Compose-network hostnames.
+before starting, reads secrets from `.env` via `env_file`, and overrides the
+network-specific URLs to point at the in-Compose-network hostnames.
 
 ## Running against real Stellar testnet
 
@@ -135,10 +159,10 @@ not implementation:
 - **OZ Channels** (x402 facilitator) needs a real key from
   [channels.openzeppelin.com](https://channels.openzeppelin.com/testnet/gen); without it,
   the x402-gated result endpoint is simply not mounted.
-- **OpenZeppelin smart accounts** (`scripts/deploy-smart-account.ts`, Sprint 17) need an
+- **OpenZeppelin smart accounts** (`scripts/deploy-smart-account.ts`) need an
   already-deployed contract WASM — none ships in any published npm package for this
   feature, so `ACCOUNT_WASM_HASH` must come from building
   [github.com/kalepail/smart-account-kit](https://github.com/kalepail/smart-account-kit)'s
   Rust contract yourself.
 - **Circle testnet USDC** requires the captcha-gated [faucet](https://faucet.circle.com) —
-  see the testnet section above.
+  see the [testnet section](#running-against-real-stellar-testnet).
