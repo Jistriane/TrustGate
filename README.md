@@ -128,12 +128,12 @@ curl -X POST localhost:3000/executors/register \
 # 2. Requester publishes a task (pays a 0.5% USDC listing fee)
 curl -X POST localhost:3000/tasks \
   -H 'Content-Type: application/json' \
-  -d '{"requester":"G...","secret":"S...(requester)","reservePrice":10,"description":"Summarize this PDF","deadline":"2026-12-31T00:00:00.000Z"}'
+  -d '{"requester":"G...","secret":"S...(requester)","reservePrice":"10","description":"Summarize this PDF","deadline":"2026-12-31T00:00:00.000Z"}'
 
 # 3. Executor bids, locking collateral in escrow
 curl -X POST localhost:3000/bids \
   -H 'Content-Type: application/json' \
-  -d '{"taskId":"<id>","executor":"G...","secret":"S...(executor)","amount":9,"collateral":1}'
+  -d '{"taskId":"<id>","executor":"G...","secret":"S...(executor)","amount":"9","collateral":"1"}'
 
 # 4. Admin selects the winning bid
 curl -X POST localhost:3000/tasks/<id>/select -H 'x-admin-secret: <ADMIN_SECRET>'

@@ -247,17 +247,28 @@ export function createApp(overrides: AppOverrides = {}): Express {
    * /executors/register:
    *   post:
    *     summary: Register an executor on the on-chain allow-list
+   *     description: >
+   *       On `NETWORK=local` (dev/CI only), the executor's secret is sent directly so
+   *       the server can submit the on-chain registration transaction. On testnet/pubnet,
+   *       no secret is ever sent; the caller proves ownership via signature headers and
+   *       provides the `publicKey` explicitly.
    *     tags: [Executors]
    *     requestBody:
    *       required: true
    *       content:
    *         application/json:
    *           schema:
-   *             type: object
-   *             required: [secret, metadataUri]
-   *             properties:
-   *               secret: { type: string, description: "Executor's Stellar secret key (S...)" }
-   *               metadataUri: { type: string, format: uri }
+   *             oneOf:
+   *               - type: object
+   *                 required: [secret, metadataUri]
+   *                 properties:
+   *                   secret: { type: string, description: "Executor's Stellar secret key (S...) — local network only" }
+   *                   metadataUri: { type: string, format: uri }
+   *               - type: object
+   *                 required: [publicKey, metadataUri]
+   *                 properties:
+   *                   publicKey: { type: string, description: "Executor's Stellar public key (G...)" }
+   *                   metadataUri: { type: string, format: uri }
    *     responses:
    *       201:
    *         description: Registered.
@@ -308,7 +319,7 @@ export function createApp(overrides: AppOverrides = {}): Express {
    *             properties:
    *               requester: { type: string, description: "Stellar public key (G...)" }
    *               secret: { type: string, description: "Requester's Stellar secret key (S...) — local network only" }
-   *               reservePrice: { type: number }
+   *               reservePrice: { type: string, description: "USDC decimal string (up to 7 decimals)" }
    *               description: { type: string }
    *               deadline: { type: string, format: date-time }
    *     responses:
@@ -386,7 +397,11 @@ export function createApp(overrides: AppOverrides = {}): Express {
    * @openapi
    * /tasks/{id}/complete:
    *   post:
-   *     summary: Mark a task complete and release the winning bid's escrow (requester only)
+   *     summary: Mark a task complete (requester only)
+   *     description: >
+   *       If Postgres+Outbox are enabled, this endpoint returns `202` and completes the escrow
+   *       release asynchronously via the worker. Without Outbox (in-memory/local mode), it
+   *       releases the escrow immediately and returns `200`.
    *     tags: [Tasks]
    *     parameters:
    *       - { name: id, in: path, required: true, schema: { type: string } }
@@ -395,27 +410,29 @@ export function createApp(overrides: AppOverrides = {}): Express {
    *       content:
    *         application/json:
    *           schema:
-   *             type: object
-   *             required: [requester, secret]
-   *             properties:
-   *               requester: { type: string, description: "Stellar public key (G...)" }
-   *               secret: { type: string, description: "Requester's Stellar secret key (S...)" }
+   *             oneOf:
+   *               - type: object
+   *                 required: [requester, secret]
+   *                 properties:
+   *                   requester: { type: string, description: "Stellar public key (G...)" }
+   *                   secret: { type: string, description: "Requester's Stellar secret key (S...) — local network only" }
+   *               - type: object
+   *                 required: [requester]
+   *                 properties:
+   *                   requester: { type: string, description: "Stellar public key (G...)" }
    *     responses:
    *       200:
-   *         description: Escrow released; task moves to COMPLETED.
+   *         description: Escrow released immediately; task moves to COMPLETED.
    *         content:
    *           application/json:
    *             schema:
-   *               type: object
-   *               properties:
-   *                 task: { $ref: '#/components/schemas/Task' }
-   *                 release:
-   *                   type: object
-   *                   properties:
-   *                     success: { type: boolean }
-   *                     transactionHash: { type: string }
-   *                     amountReleased: { type: number }
-   *                     receiver: { type: string }
+   *               $ref: '#/components/schemas/TaskCompletionImmediate'
+   *       202:
+   *         description: Completion accepted; escrow release will happen asynchronously.
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/TaskCompletionAccepted'
    *       400:
    *         description: Invalid request or secret mismatch.
    *       403:
@@ -439,20 +456,31 @@ export function createApp(overrides: AppOverrides = {}): Express {
    * /bids:
    *   post:
    *     summary: Submit a bid on an OPEN task, locking collateral in escrow
+   *     description: >
+   *       On `NETWORK=local` (dev/CI only), the executor's secret is sent so the server can
+   *       create the Trustless Work escrow. On testnet/pubnet, no secret is ever sent.
    *     tags: [Bids]
    *     requestBody:
    *       required: true
    *       content:
    *         application/json:
    *           schema:
-   *             type: object
-   *             required: [taskId, executor, secret, amount, collateral]
-   *             properties:
-   *               taskId: { type: string }
-   *               executor: { type: string, description: "Stellar public key (G...)" }
-   *               secret: { type: string, description: "Executor's Stellar secret key (S...)" }
-   *               amount: { type: number }
-   *               collateral: { type: number }
+   *             oneOf:
+   *               - type: object
+   *                 required: [taskId, executor, secret, amount, collateral]
+   *                 properties:
+   *                   taskId: { type: string }
+   *                   executor: { type: string, description: "Stellar public key (G...)" }
+   *                   secret: { type: string, description: "Executor's Stellar secret key (S...) — local network only" }
+   *                   amount: { type: string, description: "USDC decimal string (up to 7 decimals)" }
+   *                   collateral: { type: string, description: "USDC decimal string (up to 7 decimals)" }
+   *               - type: object
+   *                 required: [taskId, executor, amount, collateral]
+   *                 properties:
+   *                   taskId: { type: string }
+   *                   executor: { type: string, description: "Stellar public key (G...)" }
+   *                   amount: { type: string, description: "USDC decimal string (up to 7 decimals)" }
+   *                   collateral: { type: string, description: "USDC decimal string (up to 7 decimals)" }
    *     responses:
    *       201:
    *         description: Bid created; collateral escrowed.
@@ -542,14 +570,63 @@ export function createApp(overrides: AppOverrides = {}): Express {
      *               type: object
      *               properties:
      *                 taskId: { type: string }
-     *                 resultHash: { type: string }
-     *                 link: { type: string, format: uri }
+     *                 payloadHash: { type: string, example: "sha256:..." }
+     *                 payload: {}
      *       402:
      *         description: Payment required — response carries x402 payment requirements.
+     *       404:
+     *         description: Task or result not found.
+     *         content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+     *       409:
+     *         description: Task not in a result-available state, or no selected bid.
+     *         content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
      *       503:
      *         description: The OZ Channels facilitator is unreachable.
      */
     app.get('/executor/tasks/:taskId/result', resultPaymentGate, executorResultController.getResult);
+    /**
+     * @openapi
+     * /executor/tasks/{taskId}/result:
+     *   post:
+     *     summary: Publish the result payload for an assigned task (selected executor only)
+     *     description: >
+     *       Stores the result server-side and emits `result_published` into the outbox (if enabled).
+     *     tags: [Executor]
+     *     parameters:
+     *       - { name: taskId, in: path, required: true, schema: { type: string } }
+     *     requestBody:
+     *       required: true
+     *       content:
+     *         application/json:
+     *           schema:
+     *             type: object
+     *             required: [executorPublicKey, payload]
+     *             properties:
+     *               executorPublicKey: { type: string, description: "Stellar public key (G...)" }
+     *               payload: {}
+     *     responses:
+     *       201:
+     *         description: Result stored.
+     *         content:
+     *           application/json:
+     *             schema:
+     *               type: object
+     *               properties:
+     *                 taskId: { type: string }
+     *                 payloadHash: { type: string, example: "sha256:..." }
+     *       400:
+     *         description: Invalid request.
+     *         content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+     *       403:
+     *         description: Only the selected executor can publish.
+     *         content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+     *       404:
+     *         description: Task not found.
+     *         content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+     *       409:
+     *         description: Task not ASSIGNED, or no selected bid.
+     *         content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+     */
     app.post(
       '/executor/tasks/:taskId/result',
       signatureAuth({ matchBodyField: 'executorPublicKey' }),
