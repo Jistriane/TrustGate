@@ -1,7 +1,9 @@
 import cron, { ScheduledTask } from 'node-cron';
-import { TaskRepository } from '../repositories/taskRepository';
-import { BidRepository } from '../repositories/bidRepository';
+import { TaskRepositoryLike } from '../repositories/taskRepository';
+import { BidRepositoryLike } from '../repositories/bidRepository';
 import { EscrowServiceLike } from './escrowService';
+import { formatUsdcStroopsToDecimal } from '../utils/money';
+import { OutboxService } from './outboxService';
 
 export interface TimeoutRunResult {
   expiredTaskIds: string[];
@@ -14,23 +16,24 @@ export interface TimeoutRunResult {
  */
 export class TimeoutService {
   constructor(
-    private readonly taskRepository: TaskRepository,
-    private readonly bidRepository: BidRepository,
+    private readonly taskRepository: TaskRepositoryLike,
+    private readonly bidRepository: BidRepositoryLike,
     private readonly escrowService: EscrowServiceLike,
+    private readonly outbox?: OutboxService,
   ) {}
 
   async runOnce(): Promise<TimeoutRunResult> {
     const now = Date.now();
     const expiredTaskIds: string[] = [];
 
-    const expiredAssignedTasks = this.taskRepository
-      .list()
-      .filter((task) => task.status === 'ASSIGNED' && new Date(task.deadline).getTime() < now);
+    const expiredAssignedTasks = (await this.taskRepository.list()).filter(
+      (task) => task.status === 'ASSIGNED' && new Date(task.deadline).getTime() < now,
+    );
 
     for (const task of expiredAssignedTasks) {
-      const winningBid = this.bidRepository
-        .findByTaskId(task.id)
-        .find((bid) => bid.status === 'SELECTED');
+      const winningBid = (await this.bidRepository.findByTaskId(task.id)).find(
+        (bid) => bid.status === 'SELECTED',
+      );
 
       if (!winningBid) {
         console.warn(`[Timeout] task ${task.id} expired but has no selected bid — skipping`);
@@ -38,7 +41,8 @@ export class TimeoutService {
       }
 
       try {
-        const result = await this.escrowService.confiscate(winningBid.escrowId, winningBid.collateral);
+        const collateralAmount = Number(formatUsdcStroopsToDecimal(winningBid.collateralStroops));
+        const result = await this.escrowService.confiscate(winningBid.escrowId, collateralAmount);
         console.log(
           `[Timeout] task ${task.id} expired — confiscated escrow ${winningBid.escrowId} ` +
             `(requester: ${result.requesterShare}, marketplace: ${result.marketplaceShare}, dispute ${result.disputeId})`,
@@ -48,7 +52,14 @@ export class TimeoutService {
         continue;
       }
 
-      this.taskRepository.save({ ...task, status: 'EXPIRED' });
+      const updatedTask = { ...task, status: 'EXPIRED' as const };
+      await this.taskRepository.save(updatedTask);
+      await this.outbox?.emit({
+        type: 'task_expired',
+        aggregateType: 'task',
+        aggregateId: updatedTask.id,
+        payload: { taskId: updatedTask.id },
+      });
       expiredTaskIds.push(task.id);
     }
 

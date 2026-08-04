@@ -23,6 +23,21 @@ services:
     volumes:
       - redis-data:/data
 
+  postgres:
+    image: postgres:16-alpine
+    container_name: trustgate-postgres
+    environment:
+      - POSTGRES_USER=trustgate
+      - POSTGRES_PASSWORD=trustgate
+      - POSTGRES_DB=trustgate
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U trustgate -d trustgate']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+
   app:
     build:
       context: .
@@ -33,6 +48,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
+      postgres:
+        condition: service_healthy
     env_file:
       - .env
     environment:
@@ -42,6 +59,7 @@ services:
       - STELLAR_RPC_URL=http://stellar-quickstart:8000/soroban/rpc
       - STELLAR_HORIZON_URL=http://stellar-quickstart:8000
       - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgres://trustgate:trustgate@postgres:5432/trustgate
     ports:
       - '3000:3000'
     command:
@@ -55,9 +73,15 @@ services:
       - -t
       - '30'
       - --
+      - ./scripts/wait-for-it.sh
+      - postgres:5432
+      - -t
+      - '30'
+      - --
       - node
       - dist/server.js
 
 volumes:
   stellar-data:
   redis-data:
+  pg-data:

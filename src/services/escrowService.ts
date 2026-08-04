@@ -1,5 +1,3 @@
-import { Keypair } from '@stellar/stellar-sdk';
-
 export interface EscrowConfig {
   apiKey: string;
   network?: 'testnet' | 'mainnet';
@@ -69,7 +67,7 @@ async function loadTrustlessWorkClient(): Promise<
  * rather than a static import into this CommonJS project.
  */
 export interface EscrowServiceLike {
-  createEscrow(executor: Keypair, taskId: string, collateralAmount: number): Promise<string>;
+  createEscrow(executorPublicKey: string, taskId: string, collateralAmount: number): Promise<string>;
   releaseMilestone(escrowId: string): Promise<ReleaseResult>;
   confiscate(
     escrowId: string,
@@ -102,7 +100,7 @@ export class EscrowService implements EscrowServiceLike {
     return this.clientPromise;
   }
 
-  async createEscrow(executor: Keypair, taskId: string, collateralAmount: number): Promise<string> {
+  async createEscrow(executorPublicKey: string, taskId: string, collateralAmount: number): Promise<string> {
     const client = await this.getClient();
 
     const result = await client.createSingleRelease({
@@ -111,7 +109,7 @@ export class EscrowService implements EscrowServiceLike {
       description: `Executor collateral bond for task ${taskId}`,
       roles: {
         approver: this.config.marketplaceWallet,
-        serviceProvider: executor.publicKey(),
+        serviceProvider: executorPublicKey,
         releaseSigner: this.config.marketplaceWallet,
         platformAddress: this.config.marketplaceWallet,
         disputeResolver: this.config.marketplaceWallet,

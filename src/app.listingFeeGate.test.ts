@@ -55,7 +55,7 @@ describe('POST /tasks on testnet (MPP Charge gate)', () => {
       .post('/tasks')
       .send({
         requester: requester.publicKey(),
-        reservePrice: 1000,
+        reservePrice: '1000',
         description: 'Do something useful',
         deadline: futureDate(1),
       });
@@ -76,14 +76,14 @@ describe('POST /tasks on testnet (MPP Charge gate)', () => {
       .post('/tasks')
       .send({
         requester: requester.publicKey(),
-        reservePrice: 200,
+        reservePrice: '200',
         description: 'Summarize this document',
         deadline: futureDate(1),
       });
 
     expect(response.status).toBe(201);
     expect(response.body.status).toBe('OPEN');
-    expect(response.body.requester).toBe(requester.publicKey());
+    expect(response.body.requesterPublicKey).toBe(requester.publicKey());
     expect(response.body).not.toHaveProperty('secret');
   });
 

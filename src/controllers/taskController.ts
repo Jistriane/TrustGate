@@ -2,13 +2,14 @@ import { randomUUID } from 'crypto';
 import { Request, Response } from 'express';
 import { Keypair } from '@stellar/stellar-sdk';
 import {
-  completeTaskRequestSchema,
+  completeTaskLocalRequestSchema,
+  completeTaskSignedRequestSchema,
   createTaskSchema,
   createTaskLocalRequestSchema,
 } from '../models/taskSchema';
 import { Task } from '../models/task';
-import { TaskRepository } from '../repositories/taskRepository';
-import { BidRepository } from '../repositories/bidRepository';
+import { TaskRepositoryLike } from '../repositories/taskRepository';
+import { BidRepositoryLike } from '../repositories/bidRepository';
 import { InsufficientBalanceError, MppChargeServiceLike } from '../services/mppChargeService';
 import { TaskFeedService } from '../services/taskFeedService';
 import { EscrowServiceLike } from '../services/escrowService';
@@ -18,38 +19,51 @@ import {
   TaskNotFoundError,
   TaskNotOpenError,
 } from '../services/auctionService';
+import { parseUsdcDecimalToStroops } from '../utils/money';
+import { toTaskDto } from '../presenters/taskPresenter';
+import { toBidDto } from '../presenters/bidPresenter';
+import { OutboxService } from '../services/outboxService';
 
 export class TaskController {
   constructor(
     private readonly mppChargeService: MppChargeServiceLike,
-    private readonly taskRepository: TaskRepository,
+    private readonly taskRepository: TaskRepositoryLike,
     private readonly taskFeedService: TaskFeedService,
     private readonly auctionService: AuctionService,
     private readonly escrowService: EscrowServiceLike,
-    private readonly bidRepository: BidRepository,
+    private readonly bidRepository: BidRepositoryLike,
+    private readonly outbox?: OutboxService,
   ) {}
 
   private async saveAndPublish(
-    requester: string,
-    reservePrice: number,
+    requesterPublicKey: string,
+    reservePrice: string,
     description: string,
     deadline: string,
   ): Promise<Task> {
+    const reservePriceStroops = parseUsdcDecimalToStroops(reservePrice);
     const task: Task = {
       id: randomUUID(),
-      requester,
-      reservePrice,
+      requesterPublicKey,
+      reservePriceStroops,
       description,
       deadline,
       status: 'OPEN',
     };
-    this.taskRepository.save(task);
+    await this.taskRepository.save(task);
 
     try {
       await this.taskFeedService.publishTask(task);
     } catch (err) {
       console.error('Failed to publish task to the feed:', err);
     }
+
+    await this.outbox?.emit({
+      type: 'task_created',
+      aggregateType: 'task',
+      aggregateId: task.id,
+      payload: toTaskDto(task),
+    });
 
     return task;
   }
@@ -67,6 +81,13 @@ export class TaskController {
     }
 
     const { requester, reservePrice, description, deadline, secret } = parsed.data;
+    let reservePriceStroops: bigint;
+    try {
+      reservePriceStroops = parseUsdcDecimalToStroops(reservePrice);
+    } catch (err) {
+      res.status(400).json({ error: 'invalid reservePrice', detail: (err as Error).message });
+      return;
+    }
 
     let requesterKeypair: Keypair;
     try {
@@ -82,7 +103,7 @@ export class TaskController {
     }
 
     try {
-      await this.mppChargeService.chargeListingFee(requesterKeypair, reservePrice);
+      await this.mppChargeService.chargeListingFee(requesterKeypair, reservePriceStroops);
     } catch (err) {
       if (err instanceof InsufficientBalanceError) {
         res.status(402).json({ error: 'payment required', detail: err.message });
@@ -93,7 +114,7 @@ export class TaskController {
     }
 
     const task = await this.saveAndPublish(requester, reservePrice, description, deadline);
-    res.status(201).json(task);
+    res.status(201).json(toTaskDto(task));
   };
 
   /**
@@ -111,15 +132,21 @@ export class TaskController {
 
     const { requester, reservePrice, description, deadline } = parsed.data;
     const task = await this.saveAndPublish(requester, reservePrice, description, deadline);
-    res.status(201).json(task);
+    res.status(201).json(toTaskDto(task));
   };
 
-  select = (req: Request, res: Response): void => {
+  select = async (req: Request, res: Response): Promise<void> => {
     const taskId = String(req.params.id);
 
     try {
-      const { task, winningBid } = this.auctionService.selectWinner(taskId);
-      res.status(200).json({ task, winningBid });
+      const { task, winningBid } = await this.auctionService.selectWinner(taskId);
+      await this.outbox?.emit({
+        type: 'task_assigned',
+        aggregateType: 'task',
+        aggregateId: task.id,
+        payload: { task: toTaskDto(task), winningBid: toBidDto(winningBid) },
+      });
+      res.status(200).json({ task: toTaskDto(task), winningBid: toBidDto(winningBid) });
     } catch (err) {
       if (err instanceof TaskNotFoundError) {
         res.status(404).json({ error: 'task not found' });
@@ -140,35 +167,54 @@ export class TaskController {
   complete = async (req: Request, res: Response): Promise<void> => {
     const taskId = String(req.params.id);
 
-    const parsed = completeTaskRequestSchema.safeParse(req.body);
-    if (!parsed.success) {
-      res.status(400).json({ error: 'invalid request', detail: parsed.error.flatten() });
-      return;
+    let requester: string;
+    if (process.env.NETWORK === 'local') {
+      const parsed = completeTaskLocalRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid request', detail: parsed.error.flatten() });
+        return;
+      }
+      requester = parsed.data.requester;
+      const secret = parsed.data.secret;
+      let requesterKeypair: Keypair;
+      try {
+        requesterKeypair = Keypair.fromSecret(secret);
+      } catch {
+        res.status(400).json({ error: 'invalid secret' });
+        return;
+      }
+
+      if (requesterKeypair.publicKey() !== requester) {
+        res.status(400).json({ error: 'secret does not match requester' });
+        return;
+      }
+    } else {
+      const parsed = completeTaskSignedRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid request', detail: parsed.error.flatten() });
+        return;
+      }
+      requester = parsed.data.requester;
     }
 
-    const { requester, secret } = parsed.data;
-
-    let requesterKeypair: Keypair;
-    try {
-      requesterKeypair = Keypair.fromSecret(secret);
-    } catch {
-      res.status(400).json({ error: 'invalid secret' });
-      return;
-    }
-
-    if (requesterKeypair.publicKey() !== requester) {
-      res.status(400).json({ error: 'secret does not match requester' });
-      return;
-    }
-
-    const task = this.taskRepository.findById(taskId);
+    const task = await this.taskRepository.findById(taskId);
     if (!task) {
       res.status(404).json({ error: 'task not found' });
       return;
     }
 
-    if (task.requester !== requester) {
+    if (task.requesterPublicKey !== requester) {
       res.status(403).json({ error: 'only the task requester can complete this task' });
+      return;
+    }
+
+    if (task.status === 'COMPLETED') {
+      res.status(200).json({ task: toTaskDto(task), status: 'already completed' });
+      return;
+    }
+
+    if (task.status === 'COMPLETING') {
+      res.status(202).json({ task: toTaskDto(task), status: 'completion in progress' });
       return;
     }
 
@@ -177,28 +223,34 @@ export class TaskController {
       return;
     }
 
-    const winningBid = this.bidRepository
-      .findByTaskId(taskId)
-      .find((bid) => bid.status === 'SELECTED');
+    const winningBid = (await this.bidRepository.findByTaskId(taskId)).find(
+      (bid) => bid.status === 'SELECTED',
+    );
     if (!winningBid) {
       res.status(409).json({ error: 'no selected bid found for this task' });
       return;
     }
 
-    try {
-      const release = await this.escrowService.releaseMilestone(winningBid.escrowId);
-
-      const updatedTask: Task = { ...task, status: 'COMPLETED' };
-      this.taskRepository.save(updatedTask);
-
-      console.log(
-        `[Escrow] milestone released for task ${taskId} — escrow ${winningBid.escrowId}, ` +
-          `tx ${release.transactionHash}, ${release.amountReleased} to ${release.receiver}`,
-      );
-
-      res.status(200).json({ task: updatedTask, release });
-    } catch (err) {
-      res.status(502).json({ error: 'escrow release failed', detail: (err as Error).message });
+    if (!this.outbox) {
+      try {
+        const release = await this.escrowService.releaseMilestone(winningBid.escrowId);
+        const updatedTask: Task = { ...task, status: 'COMPLETED' };
+        await this.taskRepository.save(updatedTask);
+        res.status(200).json({ task: toTaskDto(updatedTask), release });
+      } catch (err) {
+        res.status(502).json({ error: 'escrow release failed', detail: (err as Error).message });
+      }
+      return;
     }
+
+    const completingTask: Task = { ...task, status: 'COMPLETING' };
+    await this.taskRepository.save(completingTask);
+    await this.outbox.emit({
+      type: 'task_completion_requested',
+      aggregateType: 'task',
+      aggregateId: completingTask.id,
+      payload: { taskId: completingTask.id, escrowId: winningBid.escrowId },
+    });
+    res.status(202).json({ task: toTaskDto(completingTask) });
   };
 }

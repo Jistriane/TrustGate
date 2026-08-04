@@ -20,8 +20,8 @@ process.env.ADMIN_SECRET = process.env.ADMIN_SECRET ?? Keypair.random().secret()
 function makeTask(overrides: Partial<Task> = {}): Task {
   return {
     id: 'task-1',
-    requester: 'GA5G6L2CGI6QJUOE4PPRVMAZVRRBYJ3HOGQ2NWFKKMGBJB7SZIXIKSTO',
-    reservePrice: 1000,
+    requesterPublicKey: 'GA5G6L2CGI6QJUOE4PPRVMAZVRRBYJ3HOGQ2NWFKKMGBJB7SZIXIKSTO',
+    reservePriceStroops: 10000000000n,
     description: 'Do something useful',
     deadline: new Date(Date.now() + 86400000).toISOString(),
     status: 'OPEN',
@@ -33,9 +33,9 @@ function makeBid(overrides: Partial<Bid> = {}): Bid {
   return {
     id: 'bid-1',
     taskId: 'task-1',
-    executor: 'GBEXECUTOR000000000000000000000000000000000000000000000',
-    amount: 500,
-    collateral: 50,
+    executorPublicKey: 'GBEXECUTOR000000000000000000000000000000000000000000000',
+    amountStroops: 5000000000n,
+    collateralStroops: 500000000n,
     escrowId: 'CESCROW00000000000000000000000000000000000000000000000',
     status: 'PENDING',
     createdAt: new Date().toISOString(),
@@ -72,12 +72,12 @@ describe('POST /tasks/:id/select', () => {
     const bidRepository = app.get('bidRepository') as BidRepository;
 
     const task = makeTask({ id: 'task-select' });
-    taskRepository.save(task);
+    await taskRepository.save(task);
 
-    const lowBid = makeBid({ id: 'bid-low', taskId: task.id, amount: 400 });
-    const highBid = makeBid({ id: 'bid-high', taskId: task.id, amount: 900 });
-    bidRepository.save(highBid);
-    bidRepository.save(lowBid);
+    const lowBid = makeBid({ id: 'bid-low', taskId: task.id, amountStroops: 4000000000n });
+    const highBid = makeBid({ id: 'bid-high', taskId: task.id, amountStroops: 9000000000n });
+    await bidRepository.save(highBid);
+    await bidRepository.save(lowBid);
 
     const response = await request(app)
       .post(`/tasks/${task.id}/select`)
@@ -86,17 +86,17 @@ describe('POST /tasks/:id/select', () => {
     expect(response.status).toBe(200);
     expect(response.body.task.status).toBe('ASSIGNED');
     expect(response.body.winningBid.id).toBe('bid-low');
-    expect(response.body.winningBid.executor).toBe(lowBid.executor);
+    expect(response.body.winningBid.executorPublicKey).toBe(lowBid.executorPublicKey);
 
-    expect(taskRepository.findById(task.id)?.status).toBe('ASSIGNED');
-    expect(bidRepository.findById('bid-high')?.status).toBe('REJECTED');
+    await expect(taskRepository.findById(task.id)).resolves.toMatchObject({ status: 'ASSIGNED' });
+    await expect(bidRepository.findById('bid-high')).resolves.toMatchObject({ status: 'REJECTED' });
   });
 
   it('returns 409 when the task has no pending bids', async () => {
     const app = createApp();
     const taskRepository = app.get('taskRepository') as TaskRepository;
     const task = makeTask({ id: 'task-no-bids' });
-    taskRepository.save(task);
+    await taskRepository.save(task);
 
     const response = await request(app)
       .post(`/tasks/${task.id}/select`)

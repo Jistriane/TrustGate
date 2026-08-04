@@ -15,7 +15,7 @@ function makeFakeClient(overrides: Partial<Record<'createSingleRelease' | 'relea
 
 describe('EscrowService.createEscrow', () => {
   it('creates a single-release escrow and returns its contract id', async () => {
-    const executor = Keypair.random();
+    const executor = Keypair.random().publicKey();
     const createSingleRelease = jest.fn().mockResolvedValue({
       success: true,
       contractId: 'CESCROWCONTRACTID000000000000000000000000000000000000',
@@ -36,7 +36,7 @@ describe('EscrowService.createEscrow', () => {
         engagementId: 'task-123',
         amount: 50,
         roles: expect.objectContaining({
-          serviceProvider: executor.publicKey(),
+          serviceProvider: executor,
           approver: marketplaceWallet,
           releaseSigner: marketplaceWallet,
           platformAddress: marketplaceWallet,
@@ -48,7 +48,7 @@ describe('EscrowService.createEscrow', () => {
   });
 
   it('propagates errors from the Trustless Work client', async () => {
-    const executor = Keypair.random();
+    const executor = Keypair.random().publicKey();
     const createSingleRelease = jest.fn().mockRejectedValue(new Error('API unavailable'));
     const fakeClient = makeFakeClient({ createSingleRelease });
 
@@ -57,9 +57,7 @@ describe('EscrowService.createEscrow', () => {
       fakeClient,
     );
 
-    await expect(service.createEscrow(executor, 'task-123', 50)).rejects.toThrow(
-      'API unavailable',
-    );
+    await expect(service.createEscrow(executor, 'task-123', 50)).rejects.toThrow('API unavailable');
   });
 });
 

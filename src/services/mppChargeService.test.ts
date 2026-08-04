@@ -12,6 +12,7 @@ import {
 import { loadStellarConfig } from '../config/stellar';
 import { AccountService } from './accountService';
 import { InsufficientBalanceError, MppChargeService } from './mppChargeService';
+import { parseUsdcDecimalToStroops } from '../utils/money';
 
 loadEnv({ path: path.join(__dirname, '..', '..', '.env') });
 
@@ -26,9 +27,9 @@ describe('MppChargeService.calculateFee', () => {
   );
 
   it('calculates a 0.5% fee', () => {
-    expect(service.calculateFee(1000)).toBe(5);
-    expect(service.calculateFee(100)).toBe(0.5);
-    expect(service.calculateFee(1)).toBe(0.005);
+    expect(service.calculateFeeStroops(parseUsdcDecimalToStroops('1000'))).toBe(50000000n);
+    expect(service.calculateFeeStroops(parseUsdcDecimalToStroops('100'))).toBe(5000000n);
+    expect(service.calculateFeeStroops(parseUsdcDecimalToStroops('1'))).toBe(50000n);
   });
 });
 
@@ -111,10 +112,11 @@ describeIfLive('MppChargeService.chargeListingFee (integration)', () => {
       issuer.publicKey(),
     );
 
-    const reservePrice = 1000;
-    const result = await chargeService.chargeListingFee(requester, reservePrice);
+    const reservePriceStroops = parseUsdcDecimalToStroops('1000');
+    const result = await chargeService.chargeListingFee(requester, reservePriceStroops);
 
-    expect(result.feeAmount).toBe(5);
+    expect(result.feeAmount).toBe('5');
+    expect(result.feeStroops).toBe('50000000');
     expect(result.txHash).toBeTruthy();
 
     const requesterBalanceAfter = await accountService.getUsdcBalance(
@@ -168,8 +170,8 @@ describeIfLive('MppChargeService.chargeListingFee (integration)', () => {
     const usdcSacContractId = usdc.contractId(config.networkPassphrase);
     const chargeService = new MppChargeService(config, usdcSacContractId, marketplace.publicKey());
 
-    await expect(chargeService.chargeListingFee(requester, 1000)).rejects.toBeInstanceOf(
-      InsufficientBalanceError,
-    );
+    await expect(
+      chargeService.chargeListingFee(requester, parseUsdcDecimalToStroops('1000')),
+    ).rejects.toBeInstanceOf(InsufficientBalanceError);
   }, 60000);
 });

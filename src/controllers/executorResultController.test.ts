@@ -4,18 +4,23 @@ import { ExecutorResultService } from '../services/executorResultService';
 import { ExecutorResultController } from './executorResultController';
 import { TaskRepository } from '../repositories/taskRepository';
 import { BidRepository } from '../repositories/bidRepository';
+import { InMemoryTaskResultRepository } from '../repositories/taskResultRepository';
 
-const taskRepository = new TaskRepository();
-const bidRepository = new BidRepository();
-const controller = new ExecutorResultController(
-  new ExecutorResultService(),
-  taskRepository,
-  bidRepository,
-);
-const app = express();
-app.get('/executor/tasks/:taskId/result', controller.getResult);
+let taskRepository: TaskRepository;
+let bidRepository: BidRepository;
+let service: ExecutorResultService;
+let app: express.Express;
 
 describe('ExecutorResultController.getResult', () => {
+  beforeEach(() => {
+    taskRepository = new TaskRepository();
+    bidRepository = new BidRepository();
+    service = new ExecutorResultService(new InMemoryTaskResultRepository());
+    const controller = new ExecutorResultController(service, taskRepository, bidRepository);
+    app = express();
+    app.get('/executor/tasks/:taskId/result', controller.getResult);
+  });
+
   it('returns 404 when the task does not exist', async () => {
     const response = await request(app).get('/executor/tasks/nonexistent/result');
     expect(response.status).toBe(404);
@@ -23,10 +28,10 @@ describe('ExecutorResultController.getResult', () => {
   });
 
   it('returns 409 when the task is not assigned', async () => {
-    taskRepository.save({
+    await taskRepository.save({
       id: 'task-1',
-      requester: 'GREQUESTER',
-      reservePrice: 100,
+      requesterPublicKey: 'GREQUESTER',
+      reservePriceStroops: 1000000000n,
       description: 'Do work',
       deadline: new Date(Date.now() + 86400000).toISOString(),
       status: 'OPEN',
@@ -38,10 +43,10 @@ describe('ExecutorResultController.getResult', () => {
   });
 
   it('returns 409 when no selected bid exists', async () => {
-    taskRepository.save({
+    await taskRepository.save({
       id: 'task-2',
-      requester: 'GREQUESTER',
-      reservePrice: 100,
+      requesterPublicKey: 'GREQUESTER',
+      reservePriceStroops: 1000000000n,
       description: 'Do work',
       deadline: new Date(Date.now() + 86400000).toISOString(),
       status: 'ASSIGNED',
@@ -53,24 +58,25 @@ describe('ExecutorResultController.getResult', () => {
   });
 
   it('returns 200 when task is assigned and selected bid exists', async () => {
-    taskRepository.save({
+    await taskRepository.save({
       id: 'task-3',
-      requester: 'GREQUESTER',
-      reservePrice: 100,
+      requesterPublicKey: 'GREQUESTER',
+      reservePriceStroops: 1000000000n,
       description: 'Do work',
       deadline: new Date(Date.now() + 86400000).toISOString(),
       status: 'ASSIGNED',
     });
-    bidRepository.save({
+    await bidRepository.save({
       id: 'bid-1',
       taskId: 'task-3',
-      executor: 'GEXECUTOR',
-      amount: 50,
-      collateral: 10,
+      executorPublicKey: 'GEXECUTOR',
+      amountStroops: 500000000n,
+      collateralStroops: 100000000n,
       escrowId: 'escrow-1',
       status: 'SELECTED',
       createdAt: new Date().toISOString(),
     });
+    await service.publish('task-3', { ok: true });
 
     const response = await request(app).get('/executor/tasks/task-3/result');
     expect(response.status).toBe(200);
@@ -78,24 +84,25 @@ describe('ExecutorResultController.getResult', () => {
   });
 
   it('returns 200 when task is completed and selected bid exists', async () => {
-    taskRepository.save({
+    await taskRepository.save({
       id: 'task-4',
-      requester: 'GREQUESTER',
-      reservePrice: 100,
+      requesterPublicKey: 'GREQUESTER',
+      reservePriceStroops: 1000000000n,
       description: 'Do work',
       deadline: new Date(Date.now() + 86400000).toISOString(),
       status: 'COMPLETED',
     });
-    bidRepository.save({
+    await bidRepository.save({
       id: 'bid-2',
       taskId: 'task-4',
-      executor: 'GEXECUTOR',
-      amount: 50,
-      collateral: 10,
+      executorPublicKey: 'GEXECUTOR',
+      amountStroops: 500000000n,
+      collateralStroops: 100000000n,
       escrowId: 'escrow-2',
       status: 'SELECTED',
       createdAt: new Date().toISOString(),
     });
+    await service.publish('task-4', { ok: true });
 
     const response = await request(app).get('/executor/tasks/task-4/result');
     expect(response.status).toBe(200);

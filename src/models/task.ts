@@ -1,9 +1,9 @@
-export type TaskStatus = 'OPEN' | 'ASSIGNED' | 'COMPLETED' | 'EXPIRED';
+export type TaskStatus = 'OPEN' | 'ASSIGNED' | 'COMPLETING' | 'COMPLETED' | 'EXPIRED';
 
 export interface Task {
   id: string;
-  requester: string;
-  reservePrice: number;
+  requesterPublicKey: string;
+  reservePriceStroops: bigint;
   description: string;
   deadline: string;
   status: TaskStatus;

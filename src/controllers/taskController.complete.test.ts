@@ -11,6 +11,8 @@ import { isRealApiKey } from '../testHelpers/liveApiKey';
 
 loadEnv({ path: path.join(__dirname, '..', '..', '.env') });
 
+process.env.NETWORK = 'local';
+
 process.env.USDC_ISSUER = process.env.USDC_ISSUER ?? Keypair.random().publicKey();
 process.env.MARKETPLACE_WALLET = process.env.MARKETPLACE_WALLET ?? Keypair.random().publicKey();
 process.env.REGISTRY_CONTRACT_ID =
@@ -28,8 +30,8 @@ const REQUESTER_SECRET = requesterKeypair.secret();
 function makeTask(overrides: Partial<Task> = {}): Task {
   return {
     id: 'task-1',
-    requester: REQUESTER_PUBLIC_KEY,
-    reservePrice: 1000,
+    requesterPublicKey: REQUESTER_PUBLIC_KEY,
+    reservePriceStroops: 10000000000n,
     description: 'Do something useful',
     deadline: new Date(Date.now() + 86400000).toISOString(),
     status: 'ASSIGNED',
@@ -41,9 +43,9 @@ function makeBid(overrides: Partial<Bid> = {}): Bid {
   return {
     id: 'bid-1',
     taskId: 'task-1',
-    executor: 'GBEXECUTOR000000000000000000000000000000000000000000000',
-    amount: 500,
-    collateral: 50,
+    executorPublicKey: 'GBEXECUTOR000000000000000000000000000000000000000000000',
+    amountStroops: 5000000000n,
+    collateralStroops: 500000000n,
     escrowId: 'CESCROW00000000000000000000000000000000000000000000000',
     status: 'SELECTED',
     createdAt: new Date().toISOString(),
@@ -81,7 +83,7 @@ describe('POST /tasks/:id/complete', () => {
     const app = createApp();
     const taskRepository = app.get('taskRepository') as TaskRepository;
     const task = makeTask({ id: 'task-not-owner' });
-    taskRepository.save(task);
+    await taskRepository.save(task);
 
     const other = Keypair.random();
     const response = await request(app).post(`/tasks/${task.id}/complete`).send({
@@ -96,7 +98,7 @@ describe('POST /tasks/:id/complete', () => {
     const app = createApp();
     const taskRepository = app.get('taskRepository') as TaskRepository;
     const task = makeTask({ id: 'task-still-open', status: 'OPEN' });
-    taskRepository.save(task);
+    await taskRepository.save(task);
 
     const response = await request(app).post(`/tasks/${task.id}/complete`).send({
       requester: REQUESTER_PUBLIC_KEY,
@@ -110,7 +112,7 @@ describe('POST /tasks/:id/complete', () => {
     const app = createApp();
     const taskRepository = app.get('taskRepository') as TaskRepository;
     const task = makeTask({ id: 'task-no-selected-bid' });
-    taskRepository.save(task);
+    await taskRepository.save(task);
 
     const response = await request(app).post(`/tasks/${task.id}/complete`).send({
       requester: REQUESTER_PUBLIC_KEY,
@@ -127,9 +129,9 @@ describe('POST /tasks/:id/complete', () => {
       const bidRepository = app.get('bidRepository') as BidRepository;
 
       const task = makeTask({ id: 'task-complete-live' });
-      taskRepository.save(task);
+      await taskRepository.save(task);
       const bid = makeBid({ taskId: task.id });
-      bidRepository.save(bid);
+      await bidRepository.save(bid);
 
       const response = await request(app).post(`/tasks/${task.id}/complete`).send({
         requester: REQUESTER_PUBLIC_KEY,
@@ -139,7 +141,7 @@ describe('POST /tasks/:id/complete', () => {
       expect(response.status).toBe(200);
       expect(response.body.task.status).toBe('COMPLETED');
       expect(response.body.release.success).toBe(true);
-      expect(taskRepository.findById(task.id)?.status).toBe('COMPLETED');
+      await expect(taskRepository.findById(task.id)).resolves.toMatchObject({ status: 'COMPLETED' });
     }, 30000);
   });
 });

@@ -1,10 +1,20 @@
 import { z } from 'zod';
+import { parseUsdcDecimalToStroops } from '../utils/money';
 
 export const createTaskSchema = z.object({
   requester: z
     .string()
     .regex(/^G[A-Z2-7]{55}$/, 'requester must be a valid Stellar public key'),
-  reservePrice: z.number().positive('reservePrice must be greater than 0'),
+  reservePrice: z
+    .string()
+    .min(1, 'reservePrice is required')
+    .refine((value) => {
+      try {
+        return parseUsdcDecimalToStroops(value) > 0n;
+      } catch {
+        return false;
+      }
+    }, 'reservePrice must be a valid USDC decimal string'),
   description: z.string().min(1, 'description is required'),
   deadline: z
     .string()
@@ -26,11 +36,15 @@ export const createTaskLocalRequestSchema = createTaskSchema.extend({
 
 export type CreateTaskLocalRequest = z.infer<typeof createTaskLocalRequestSchema>;
 
-export const completeTaskRequestSchema = z.object({
+export const completeTaskSignedRequestSchema = z.object({
   requester: z
     .string()
     .regex(/^G[A-Z2-7]{55}$/, 'requester must be a valid Stellar public key'),
+});
+
+export const completeTaskLocalRequestSchema = completeTaskSignedRequestSchema.extend({
   secret: z.string().regex(/^S[A-Z2-7]{55}$/, 'secret must be a valid Stellar secret key'),
 });
 
-export type CompleteTaskRequest = z.infer<typeof completeTaskRequestSchema>;
+export type CompleteTaskSignedRequest = z.infer<typeof completeTaskSignedRequestSchema>;
+export type CompleteTaskLocalRequest = z.infer<typeof completeTaskLocalRequestSchema>;

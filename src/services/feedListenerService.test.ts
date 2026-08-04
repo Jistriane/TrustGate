@@ -6,8 +6,8 @@ import { FeedListenerService } from './feedListenerService';
 function makeTask(overrides: Partial<Task> = {}): Task {
   return {
     id: 'task-1',
-    requester: 'GA5G6L2CGI6QJUOE4PPRVMAZVRRBYJ3HOGQ2NWFKKMGBJB7SZIXIKSTO',
-    reservePrice: 100,
+    requesterPublicKey: 'GA5G6L2CGI6QJUOE4PPRVMAZVRRBYJ3HOGQ2NWFKKMGBJB7SZIXIKSTO',
+    reservePriceStroops: 1000000000n,
     description: 'Do something useful',
     deadline: new Date(Date.now() + 86400000).toISOString(),
     status: 'OPEN',
@@ -38,7 +38,7 @@ describe('FeedListenerService', () => {
     listener.stop();
     await feedService.publishTask(makeTask());
 
-    const listenerLogs = logSpy.mock.calls.filter((call) =>
+    const listenerLogs = logSpy.mock.calls.filter((call: unknown[]) =>
       String(call[0]).includes('[Feed Listener]'),
     );
     expect(listenerLogs).toHaveLength(0);

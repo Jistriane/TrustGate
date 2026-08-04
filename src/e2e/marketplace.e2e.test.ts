@@ -7,6 +7,7 @@ import { EscrowServiceLike, ReleaseResult } from '../services/escrowService';
 import { X402PaymentService } from '../services/x402PaymentService';
 import { TaskRepository } from '../repositories/taskRepository';
 import { BidRepository } from '../repositories/bidRepository';
+import { formatUsdcStroopsToDecimal, parseUsdcDecimalToStroops } from '../utils/money';
 
 process.env.NETWORK = process.env.NETWORK ?? 'local';
 process.env.ADMIN_SECRET = process.env.ADMIN_SECRET ?? Keypair.random().secret();
@@ -41,17 +42,22 @@ describe('Marketplace E2E flow (mocked)', () => {
   }
 
   function makeFakeMppChargeService(): MppChargeServiceLike & {
-    charges: { requester: string; reservePrice: number }[];
+    charges: { requester: string; reservePriceStroops: bigint }[];
   } {
-    const charges: { requester: string; reservePrice: number }[] = [];
+    const charges: { requester: string; reservePriceStroops: bigint }[] = [];
     return {
       charges,
-      calculateFee(reservePrice) {
-        return Math.round(reservePrice * 0.005 * 1e7) / 1e7;
+      calculateFeeStroops(reservePriceStroops) {
+        return (reservePriceStroops * 5n + 500n) / 1000n;
       },
-      async chargeListingFee(requester, reservePrice): Promise<ChargeResult> {
-        charges.push({ requester: requester.publicKey(), reservePrice });
-        return { feeAmount: this.calculateFee(reservePrice), txHash: 'fake-charge-tx' };
+      async chargeListingFee(requester, reservePriceStroops): Promise<ChargeResult> {
+        charges.push({ requester: requester.publicKey(), reservePriceStroops });
+        const feeStroops = this.calculateFeeStroops(reservePriceStroops);
+        return {
+          feeAmount: formatUsdcStroopsToDecimal(feeStroops),
+          feeStroops: feeStroops.toString(),
+          txHash: 'fake-charge-tx',
+        };
       },
     };
   }
@@ -120,7 +126,7 @@ describe('Marketplace E2E flow (mocked)', () => {
     const createTaskRes = await request(app).post('/tasks').send({
       requester: requester.publicKey(),
       secret: requester.secret(),
-      reservePrice: 1000,
+      reservePrice: '1000',
       description: 'Summarize this document',
       deadline,
     });
@@ -129,27 +135,27 @@ describe('Marketplace E2E flow (mocked)', () => {
     expect(createTaskRes.body.status).toBe('OPEN');
     const taskId = createTaskRes.body.id as string;
     expect(fakeMppChargeService.charges).toEqual([
-      { requester: requester.publicKey(), reservePrice: 1000 },
+      { requester: requester.publicKey(), reservePriceStroops: parseUsdcDecimalToStroops('1000') },
     ]);
 
     const taskRepository = app.get('taskRepository') as TaskRepository;
     const bidRepository = app.get('bidRepository') as BidRepository;
-    expect(taskRepository.findById(taskId)?.status).toBe('OPEN');
+    await expect(taskRepository.findById(taskId)).resolves.toMatchObject({ status: 'OPEN' });
 
     // 3. Lance — executor bids, locking collateral in a (fake) escrow.
     const bidRes = await request(app).post('/bids').send({
       taskId,
       executor: executor.publicKey(),
       secret: executor.secret(),
-      amount: 900,
-      collateral: 50,
+      amount: '900',
+      collateral: '50',
     });
 
     expect(bidRes.status).toBe(201);
     expect(bidRes.body.status).toBe('PENDING');
     const escrowId = bidRes.body.escrowId as string;
     expect(fakeEscrowService.escrows.has(escrowId)).toBe(true);
-    expect(bidRepository.findById(bidRes.body.id)?.status).toBe('PENDING');
+    await expect(bidRepository.findById(bidRes.body.id)).resolves.toMatchObject({ status: 'PENDING' });
 
     // 4. Selecionar — marketplace admin selects the (only) bid as winner.
     const selectRes = await request(app)
@@ -158,14 +164,14 @@ describe('Marketplace E2E flow (mocked)', () => {
 
     expect(selectRes.status).toBe(200);
     expect(selectRes.body.task.status).toBe('ASSIGNED');
-    expect(selectRes.body.winningBid.executor).toBe(executor.publicKey());
-    expect(taskRepository.findById(taskId)?.status).toBe('ASSIGNED');
-    expect(bidRepository.findById(bidRes.body.id)?.status).toBe('SELECTED');
+    expect(selectRes.body.winningBid.executorPublicKey).toBe(executor.publicKey());
+    await expect(taskRepository.findById(taskId)).resolves.toMatchObject({ status: 'ASSIGNED' });
+    await expect(bidRepository.findById(bidRes.body.id)).resolves.toMatchObject({ status: 'SELECTED' });
 
     // 5. Pagar x402 — requester pays the executor's (mocked) result endpoint.
     const fakeFetchWithPayment = jest.fn().mockResolvedValue(
       new Response(
-        JSON.stringify({ taskId, resultHash: 'sha256:fake', link: 'https://executor.example.com/r' }),
+        JSON.stringify({ taskId, payloadHash: 'sha256:fake', payload: { ok: true } }),
         { status: 200, headers: { 'Content-Type': 'application/json' } },
       ),
     );
@@ -176,7 +182,7 @@ describe('Marketplace E2E flow (mocked)', () => {
     const paymentResult = (await x402PaymentService.payForResult(
       taskId,
       'https://executor.example.com',
-    )) as { taskId: string; resultHash: string };
+    )) as { taskId: string; payloadHash: string };
 
     expect(paymentResult.taskId).toBe(taskId);
     expect(fakeFetchWithPayment).toHaveBeenCalledWith(
@@ -192,7 +198,7 @@ describe('Marketplace E2E flow (mocked)', () => {
     expect(completeRes.status).toBe(200);
     expect(completeRes.body.task.status).toBe('COMPLETED');
     expect(completeRes.body.release.success).toBe(true);
-    expect(taskRepository.findById(taskId)?.status).toBe('COMPLETED');
+    await expect(taskRepository.findById(taskId)).resolves.toMatchObject({ status: 'COMPLETED' });
     expect(fakeEscrowService.escrows.get(escrowId)?.released).toBe(true);
   }, 15000);
 });

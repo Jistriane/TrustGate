@@ -9,6 +9,8 @@ import { isRealApiKey } from '../testHelpers/liveApiKey';
 
 loadEnv({ path: path.join(__dirname, '..', '..', '.env') });
 
+process.env.NETWORK = 'local';
+
 process.env.USDC_ISSUER = process.env.USDC_ISSUER ?? Keypair.random().publicKey();
 process.env.MARKETPLACE_WALLET = process.env.MARKETPLACE_WALLET ?? Keypair.random().publicKey();
 process.env.REGISTRY_CONTRACT_ID =
@@ -22,8 +24,8 @@ const describeIfRealEscrowApi = isRealApiKey(process.env.TRUSTLESS_WORK_API_KEY)
 function makeOpenTask(overrides: Partial<Task> = {}): Task {
   return {
     id: 'task-1',
-    requester: 'GA5G6L2CGI6QJUOE4PPRVMAZVRRBYJ3HOGQ2NWFKKMGBJB7SZIXIKSTO',
-    reservePrice: 100,
+    requesterPublicKey: 'GA5G6L2CGI6QJUOE4PPRVMAZVRRBYJ3HOGQ2NWFKKMGBJB7SZIXIKSTO',
+    reservePriceStroops: 1000000000n,
     description: 'Do something useful',
     deadline: new Date(Date.now() + 86400000).toISOString(),
     status: 'OPEN',
@@ -40,8 +42,8 @@ describe('POST /bids', () => {
       taskId: 'missing-task',
       executor: executor.publicKey(),
       secret: executor.secret(),
-      amount: 90,
-      collateral: 10,
+      amount: '90',
+      collateral: '10',
     });
 
     expect(response.status).toBe(404);
@@ -51,15 +53,15 @@ describe('POST /bids', () => {
     const app = createApp();
     const taskRepository = app.get('taskRepository') as TaskRepository;
     const task = makeOpenTask({ id: 'task-not-open', status: 'ASSIGNED' });
-    taskRepository.save(task);
+    await taskRepository.save(task);
 
     const executor = Keypair.random();
     const response = await request(app).post('/bids').send({
       taskId: task.id,
       executor: executor.publicKey(),
       secret: executor.secret(),
-      amount: 90,
-      collateral: 10,
+      amount: '90',
+      collateral: '10',
     });
 
     expect(response.status).toBe(409);
@@ -69,7 +71,7 @@ describe('POST /bids', () => {
     const app = createApp();
     const taskRepository = app.get('taskRepository') as TaskRepository;
     const task = makeOpenTask({ id: 'task-mismatch' });
-    taskRepository.save(task);
+    await taskRepository.save(task);
 
     const executor = Keypair.random();
     const other = Keypair.random();
@@ -78,8 +80,8 @@ describe('POST /bids', () => {
       taskId: task.id,
       executor: executor.publicKey(),
       secret: other.secret(),
-      amount: 90,
-      collateral: 10,
+      amount: '90',
+      collateral: '10',
     });
 
     expect(response.status).toBe(400);
@@ -122,15 +124,15 @@ describe('POST /bids', () => {
     });
     const taskRepository = app.get('taskRepository') as TaskRepository;
     const task = makeOpenTask({ id: 'task-unauthorized' });
-    taskRepository.save(task);
+    await taskRepository.save(task);
 
     const executor = Keypair.random();
     const response = await request(app).post('/bids').send({
       taskId: task.id,
       executor: executor.publicKey(),
       secret: executor.secret(),
-      amount: 90,
-      collateral: 10,
+      amount: '90',
+      collateral: '10',
     });
 
     expect(response.status).toBe(403);
@@ -168,20 +170,20 @@ describe('POST /bids', () => {
     });
     const taskRepository = app.get('taskRepository') as TaskRepository;
     const task = makeOpenTask({ id: 'task-authorized' });
-    taskRepository.save(task);
+    await taskRepository.save(task);
 
     const executor = Keypair.random();
     const response = await request(app).post('/bids').send({
       taskId: task.id,
       executor: executor.publicKey(),
       secret: executor.secret(),
-      amount: 90,
-      collateral: 10,
+      amount: '90',
+      collateral: '10',
     });
 
     expect(response.status).toBe(201);
     expect(response.body.taskId).toBe(task.id);
-    expect(response.body.executor).toBe(executor.publicKey());
+    expect(response.body.executorPublicKey).toBe(executor.publicKey());
     expect(response.body.escrowId).toBe('CFAKEESCROWID000000000000000000000000000000000000');
     expect(response.body.status).toBe('PENDING');
   });
@@ -191,7 +193,7 @@ describe('POST /bids', () => {
       const app = createApp();
       const taskRepository = app.get('taskRepository') as TaskRepository;
       const task = makeOpenTask({ id: 'task-live-escrow' });
-      taskRepository.save(task);
+      await taskRepository.save(task);
 
       const executor = Keypair.random();
       const response = await request(app)
@@ -200,13 +202,13 @@ describe('POST /bids', () => {
           taskId: task.id,
           executor: executor.publicKey(),
           secret: executor.secret(),
-          amount: 90,
-          collateral: 10,
+          amount: '90',
+          collateral: '10',
         });
 
       expect(response.status).toBe(201);
       expect(response.body.taskId).toBe(task.id);
-      expect(response.body.executor).toBe(executor.publicKey());
+      expect(response.body.executorPublicKey).toBe(executor.publicKey());
       expect(response.body.escrowId).toBeTruthy();
       expect(response.body.status).toBe('PENDING');
     }, 30000);

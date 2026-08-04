@@ -4,6 +4,7 @@ dist
 .env.*
 !.env.example
 *.log
+.deploy_keys/
 target/
 Cargo.lock
 !contracts/*/Cargo.lock

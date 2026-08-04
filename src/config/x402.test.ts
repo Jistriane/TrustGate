@@ -56,34 +56,33 @@ describe('GET /executor/tasks/:taskId/result', () => {
     const taskRepository = app.get('taskRepository') as TaskRepository;
     const bidRepository = app.get('bidRepository') as BidRepository;
 
-    taskRepository.save({
+    await taskRepository.save({
       id: 'task-payment-test',
-      requester: 'GREQUESTER',
-      reservePrice: 100,
+      requesterPublicKey: 'GREQUESTER',
+      reservePriceStroops: 1000000000n,
       description: 'Deliver result',
       deadline: new Date(Date.now() + 86400000).toISOString(),
       status: 'ASSIGNED',
     });
-    bidRepository.save({
+    await bidRepository.save({
       id: 'bid-selected',
       taskId: 'task-payment-test',
-      executor: 'GEXECUTOR',
-      amount: 50,
-      collateral: 10,
+      executorPublicKey: 'GEXECUTOR',
+      amountStroops: 500000000n,
+      collateralStroops: 100000000n,
       escrowId: 'escrow-1',
       status: 'SELECTED',
       createdAt: new Date().toISOString(),
     });
+    await request(app)
+      .post('/executor/tasks/task-payment-test/result')
+      .send({ executorPublicKey: 'GEXECUTOR', payload: { ok: true } });
 
     const response = await request(app).get('/executor/tasks/task-payment-test/result');
 
     expect(response.status).toBe(200);
-    expect(response.body).toEqual({
-      taskId: 'task-payment-test',
-      resultHash:
-        'sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08',
-      link: 'https://executor.example.com/results/task-payment-test',
-    });
+    expect(response.body.taskId).toBe('task-payment-test');
+    expect(response.body.payloadHash).toMatch(/^sha256:/);
     expect(response.headers['x-fake-result-gate']).toBe('true');
 
     if (previous !== undefined) process.env.OZ_API_KEY = previous;
@@ -97,34 +96,41 @@ describe('GET /executor/tasks/:taskId/result', () => {
     const taskRepository = app.get('taskRepository') as TaskRepository;
     const bidRepository = app.get('bidRepository') as BidRepository;
 
-    taskRepository.save({
+    await taskRepository.save({
       id: 'task-payment-completed',
-      requester: 'GREQUESTER',
-      reservePrice: 100,
+      requesterPublicKey: 'GREQUESTER',
+      reservePriceStroops: 1000000000n,
       description: 'Deliver final result',
       deadline: new Date(Date.now() + 86400000).toISOString(),
-      status: 'COMPLETED',
+      status: 'ASSIGNED',
     });
-    bidRepository.save({
+    await bidRepository.save({
       id: 'bid-selected-completed',
       taskId: 'task-payment-completed',
-      executor: 'GEXECUTOR',
-      amount: 50,
-      collateral: 10,
+      executorPublicKey: 'GEXECUTOR',
+      amountStroops: 500000000n,
+      collateralStroops: 100000000n,
       escrowId: 'escrow-2',
       status: 'SELECTED',
       createdAt: new Date().toISOString(),
+    });
+    await request(app)
+      .post('/executor/tasks/task-payment-completed/result')
+      .send({ executorPublicKey: 'GEXECUTOR', payload: { ok: true } });
+    await taskRepository.save({
+      id: 'task-payment-completed',
+      requesterPublicKey: 'GREQUESTER',
+      reservePriceStroops: 1000000000n,
+      description: 'Deliver final result',
+      deadline: new Date(Date.now() + 86400000).toISOString(),
+      status: 'COMPLETED',
     });
 
     const response = await request(app).get('/executor/tasks/task-payment-completed/result');
 
     expect(response.status).toBe(200);
-    expect(response.body).toEqual({
-      taskId: 'task-payment-completed',
-      resultHash:
-        'sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08',
-      link: 'https://executor.example.com/results/task-payment-completed',
-    });
+    expect(response.body.taskId).toBe('task-payment-completed');
+    expect(response.body.payloadHash).toMatch(/^sha256:/);
     expect(response.headers['x-fake-result-gate']).toBe('true');
 
     if (previous !== undefined) process.env.OZ_API_KEY = previous;

@@ -5,8 +5,8 @@ import { TaskFeedService } from './taskFeedService';
 function makeTask(overrides: Partial<Task> = {}): Task {
   return {
     id: 'task-1',
-    requester: 'GA5G6L2CGI6QJUOE4PPRVMAZVRRBYJ3HOGQ2NWFKKMGBJB7SZIXIKSTO',
-    reservePrice: 100,
+    requesterPublicKey: 'GA5G6L2CGI6QJUOE4PPRVMAZVRRBYJ3HOGQ2NWFKKMGBJB7SZIXIKSTO',
+    reservePriceStroops: 1000000000n,
     description: 'Do something useful',
     deadline: new Date(Date.now() + 86400000).toISOString(),
     status: 'OPEN',

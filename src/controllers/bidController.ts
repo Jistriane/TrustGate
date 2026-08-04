@@ -1,44 +1,61 @@
 import { randomUUID } from 'crypto';
 import { Request, Response } from 'express';
 import { Keypair } from '@stellar/stellar-sdk';
-import { createBidSchema } from '../models/bidSchema';
+import { createBidLocalSchema, createBidSignedSchema } from '../models/bidSchema';
 import { Bid } from '../models/bid';
-import { TaskRepository } from '../repositories/taskRepository';
-import { BidRepository } from '../repositories/bidRepository';
+import { TaskRepositoryLike } from '../repositories/taskRepository';
+import { BidRepositoryLike } from '../repositories/bidRepository';
 import { EscrowServiceLike } from '../services/escrowService';
 import { ExecutorNotAllowedError, PolicyService } from '../services/policyService';
+import { parseUsdcDecimalToStroops } from '../utils/money';
+import { toBidDto } from '../presenters/bidPresenter';
+import { OutboxService } from '../services/outboxService';
 
 export class BidController {
   constructor(
-    private readonly taskRepository: TaskRepository,
+    private readonly taskRepository: TaskRepositoryLike,
     private readonly escrowService: EscrowServiceLike,
-    private readonly bidRepository: BidRepository,
+    private readonly bidRepository: BidRepositoryLike,
     private readonly policyService: PolicyService,
+    private readonly outbox?: OutboxService,
   ) {}
 
   create = async (req: Request, res: Response): Promise<void> => {
-    const parsed = createBidSchema.safeParse(req.body);
-    if (!parsed.success) {
-      res.status(400).json({ error: 'invalid request', detail: parsed.error.flatten() });
-      return;
+    let taskId: string;
+    let executor: string;
+    let amount: string;
+    let collateral: string;
+    let executorKeypair: Keypair | undefined;
+
+    if (process.env.NETWORK === 'local') {
+      const parsed = createBidLocalSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid request', detail: parsed.error.flatten() });
+        return;
+      }
+      ({ taskId, executor, amount, collateral } = parsed.data);
+
+      try {
+        executorKeypair = Keypair.fromSecret(parsed.data.secret);
+      } catch {
+        res.status(400).json({ error: 'invalid secret' });
+        return;
+      }
+
+      if (executorKeypair.publicKey() !== executor) {
+        res.status(400).json({ error: 'secret does not match executor' });
+        return;
+      }
+    } else {
+      const parsed = createBidSignedSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid request', detail: parsed.error.flatten() });
+        return;
+      }
+      ({ taskId, executor, amount, collateral } = parsed.data);
     }
 
-    const { taskId, executor, secret, amount, collateral } = parsed.data;
-
-    let executorKeypair: Keypair;
-    try {
-      executorKeypair = Keypair.fromSecret(secret);
-    } catch {
-      res.status(400).json({ error: 'invalid secret' });
-      return;
-    }
-
-    if (executorKeypair.publicKey() !== executor) {
-      res.status(400).json({ error: 'secret does not match executor' });
-      return;
-    }
-
-    const task = this.taskRepository.findById(taskId);
+    const task = await this.taskRepository.findById(taskId);
     if (!task) {
       res.status(404).json({ error: 'task not found' });
       return;
@@ -52,7 +69,7 @@ export class BidController {
     // Enforce the on-chain Registry allow-list before locking collateral.
     // Only registered executors are permitted to bid.
     try {
-      await this.policyService.authorizeExecutorPayment(executorKeypair.publicKey());
+      await this.policyService.authorizeExecutorPayment(executor);
     } catch (err) {
       if (err instanceof ExecutorNotAllowedError) {
         res.status(403).json({ error: 'executor is not registered' });
@@ -64,24 +81,41 @@ export class BidController {
 
     let escrowId: string;
     try {
-      escrowId = await this.escrowService.createEscrow(executorKeypair, taskId, collateral);
+      escrowId = await this.escrowService.createEscrow(executor, taskId, Number(collateral));
     } catch (err) {
       res.status(502).json({ error: 'escrow creation failed', detail: (err as Error).message });
+      return;
+    }
+
+    let amountStroops: bigint;
+    let collateralStroops: bigint;
+    try {
+      amountStroops = parseUsdcDecimalToStroops(amount);
+      collateralStroops = parseUsdcDecimalToStroops(collateral);
+    } catch (err) {
+      res.status(400).json({ error: 'invalid amount/collateral', detail: (err as Error).message });
       return;
     }
 
     const bid: Bid = {
       id: randomUUID(),
       taskId,
-      executor,
-      amount,
-      collateral,
+      executorPublicKey: executor,
+      amountStroops,
+      collateralStroops,
       escrowId,
       status: 'PENDING',
       createdAt: new Date().toISOString(),
     };
-    this.bidRepository.save(bid);
+    await this.bidRepository.save(bid);
 
-    res.status(201).json(bid);
+    await this.outbox?.emit({
+      type: 'bid_placed',
+      aggregateType: 'bid',
+      aggregateId: bid.id,
+      payload: toBidDto(bid),
+    });
+
+    res.status(201).json(toBidDto(bid));
   };
 }

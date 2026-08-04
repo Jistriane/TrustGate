@@ -13,16 +13,20 @@ import { RegistryService, RegistryServiceLike } from './services/registryService
 import { MppChargeService, MppChargeServiceLike } from './services/mppChargeService';
 import { FeedTick, TaskFeedService } from './services/taskFeedService';
 import { PolicyService } from './services/policyService';
-import { calculateListingFee } from './services/listingFee';
+import { calculateListingFeeStroops } from './services/listingFee';
 import { createTaskSchema } from './models/taskSchema';
 import { createListingFeeGateFactory } from './config/mppCharge';
 import { EscrowService, EscrowServiceLike } from './services/escrowService';
 import { AuctionService } from './services/auctionService';
 import { TimeoutService } from './services/timeoutService';
-import { ExecutorRepository } from './repositories/executorRepository';
-import { TaskRepository } from './repositories/taskRepository';
-import { BidRepository } from './repositories/bidRepository';
+import { InMemoryExecutorRepository, PgExecutorRepository } from './repositories/executorRepository';
+import { InMemoryTaskRepository, PgTaskRepository } from './repositories/taskRepository';
+import { InMemoryBidRepository, PgBidRepository } from './repositories/bidRepository';
+import { InMemoryTaskResultRepository, PgTaskResultRepository } from './repositories/taskResultRepository';
+import { PgOutboxRepository } from './repositories/outboxRepository';
+import { PgIdempotencyRepository } from './repositories/idempotencyRepository';
 import { ExecutorResultService } from './services/executorResultService';
+import { OutboxService } from './services/outboxService';
 import { ExecutorController } from './controllers/executorController';
 import { TaskController } from './controllers/taskController';
 import { BidController } from './controllers/bidController';
@@ -30,6 +34,10 @@ import { ExecutorResultController } from './controllers/executorResultController
 import { errorHandler } from './middlewares/errorHandler';
 import { adminAuth } from './middlewares/adminAuth';
 import { createResultPaymentGate } from './config/x402';
+import { getDbPool } from './db/pool';
+import { formatUsdcStroopsToDecimal, parseUsdcDecimalToStroops } from './utils/money';
+import { signatureAuth } from './middlewares/signatureAuth';
+import { idempotency } from './middlewares/idempotency';
 
 export interface AppOverrides {
   /** Swap the real Registry/Soroban integration for a fake — e2e/mocked tests. */
@@ -64,7 +72,13 @@ export function createApp(overrides: AppOverrides = {}): Express {
     }
     registryService = new RegistryService(config, registryContractId);
   }
-  const executorRepository = new ExecutorRepository();
+
+  const pool = process.env.DATABASE_URL ? getDbPool() : undefined;
+  if (!pool && config.network !== 'local' && process.env.NODE_ENV !== 'test') {
+    throw new Error('DATABASE_URL is not set (required for non-local networks)');
+  }
+
+  const executorRepository = pool ? new PgExecutorRepository(pool) : new InMemoryExecutorRepository();
   const executorController = new ExecutorController(registryService, executorRepository);
 
   let feedSigningKey: Keypair;
@@ -81,10 +95,14 @@ export function createApp(overrides: AppOverrides = {}): Express {
     overrides.mppChargeService ??
     new MppChargeService(config, getUsdcSacContractId(config), marketplaceWallet);
   const taskFeedService = new TaskFeedService(feedSigningKey);
-  const taskRepository = new TaskRepository();
-  const bidRepository = new BidRepository();
+  const taskRepository = pool ? new PgTaskRepository(pool) : new InMemoryTaskRepository();
+  const bidRepository = pool ? new PgBidRepository(pool) : new InMemoryBidRepository();
   const auctionService = new AuctionService(taskRepository, bidRepository);
   const policyService = new PolicyService(registryService);
+  const outboxService = pool ? new OutboxService(new PgOutboxRepository(pool)) : undefined;
+  const idempotencyRepo = pool ? new PgIdempotencyRepository(pool) : undefined;
+  const idempotencyMw = (options: Parameters<typeof idempotency>[1]): RequestHandler =>
+    idempotencyRepo ? idempotency(idempotencyRepo, options) : (_req, _res, next) => next();
 
   let listingFeeGateFactory: ((amount: string, description: string) => Promise<RequestHandler>) | undefined;
   if (config.network !== 'local') {
@@ -131,9 +149,10 @@ export function createApp(overrides: AppOverrides = {}): Express {
     auctionService,
     escrowService,
     bidRepository,
+    outboxService,
   );
-  const bidController = new BidController(taskRepository, escrowService, bidRepository, policyService);
-  const timeoutService = new TimeoutService(taskRepository, bidRepository, escrowService);
+  const bidController = new BidController(taskRepository, escrowService, bidRepository, policyService, outboxService);
+  const timeoutService = new TimeoutService(taskRepository, bidRepository, escrowService, outboxService);
 
   const app = express();
   app.use(helmet());
@@ -141,7 +160,13 @@ export function createApp(overrides: AppOverrides = {}): Express {
   if (process.env.NODE_ENV !== 'test') {
     app.use(requestLogger);
   }
-  app.use(express.json());
+  app.use(
+    express.json({
+      verify: (req, _res, buf) => {
+        (req as unknown as { rawBody?: Buffer }).rawBody = buf;
+      },
+    }),
+  );
 
   // Swagger UI's page needs inline scripts/styles to bootstrap; helmet's
   // default CSP (script-src 'self', etc.) blocks that. Strip the CSP header
@@ -251,7 +276,12 @@ export function createApp(overrides: AppOverrides = {}): Express {
    *         description: Registration failed (e.g. already registered).
    *         content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
    */
-  app.post('/executors/register', executorController.register);
+  app.post(
+    '/executors/register',
+    signatureAuth({ matchBodyField: 'publicKey' }),
+    idempotencyMw({ scope: 'executor_register', publicKeyFrom: { bodyField: 'publicKey' } }),
+    executorController.register,
+  );
 
   /**
    * @openapi
@@ -305,15 +335,23 @@ export function createApp(overrides: AppOverrides = {}): Express {
           return;
         }
 
-        const amount = calculateListingFee(parsed.data.reservePrice).toString();
+        const reservePriceStroops = parseUsdcDecimalToStroops(parsed.data.reservePrice);
+        const feeStroops = calculateListingFeeStroops(reservePriceStroops);
+        const amount = formatUsdcStroopsToDecimal(feeStroops);
         const description = `Listing fee for task by ${parsed.data.requester}`;
         const gate = await listingFeeGateFactory(amount, description);
         gate(req, res, next);
       },
+      signatureAuth({ matchBodyField: 'requester' }),
+      idempotencyMw({ scope: 'create_task', publicKeyFrom: { bodyField: 'requester' } }),
       taskController.createPaid,
     );
   } else {
-    app.post('/tasks', taskController.create);
+    app.post(
+      '/tasks',
+      idempotencyMw({ scope: 'create_task', publicKeyFrom: { bodyField: 'requester' } }),
+      taskController.create,
+    );
   }
 
   /**
@@ -342,7 +380,7 @@ export function createApp(overrides: AppOverrides = {}): Express {
    *       409:
    *         description: Task not OPEN, or no pending bids.
    */
-  app.post('/tasks/:id/select', adminAuth, taskController.select);
+  app.post('/tasks/:id/select', adminAuth, idempotencyMw({ scope: 'select_bid' }), taskController.select);
 
   /**
    * @openapi
@@ -389,7 +427,12 @@ export function createApp(overrides: AppOverrides = {}): Express {
    *       502:
    *         description: Escrow release failed (network error).
    */
-  app.post('/tasks/:id/complete', taskController.complete);
+  app.post(
+    '/tasks/:id/complete',
+    signatureAuth({ matchBodyField: 'requester' }),
+    idempotencyMw({ scope: 'complete_task', publicKeyFrom: { bodyField: 'requester' } }),
+    taskController.complete,
+  );
 
   /**
    * @openapi
@@ -423,7 +466,12 @@ export function createApp(overrides: AppOverrides = {}): Express {
    *       502:
    *         description: Escrow creation failed (network error).
    */
-  app.post('/bids', bidController.create);
+  app.post(
+    '/bids',
+    signatureAuth({ matchBodyField: 'executor' }),
+    idempotencyMw({ scope: 'place_bid', publicKeyFrom: { bodyField: 'executor' } }),
+    bidController.create,
+  );
 
   /**
    * @openapi
@@ -469,11 +517,13 @@ export function createApp(overrides: AppOverrides = {}): Express {
   }
 
   if (resultPaymentGate) {
-    const executorResultService = new ExecutorResultService();
+    const taskResultRepository = pool ? new PgTaskResultRepository(pool) : new InMemoryTaskResultRepository();
+    const executorResultService = new ExecutorResultService(taskResultRepository);
     const executorResultController = new ExecutorResultController(
       executorResultService,
       taskRepository,
       bidRepository,
+      outboxService,
     );
     /**
      * @openapi
@@ -500,6 +550,12 @@ export function createApp(overrides: AppOverrides = {}): Express {
      *         description: The OZ Channels facilitator is unreachable.
      */
     app.get('/executor/tasks/:taskId/result', resultPaymentGate, executorResultController.getResult);
+    app.post(
+      '/executor/tasks/:taskId/result',
+      signatureAuth({ matchBodyField: 'executorPublicKey' }),
+      idempotencyMw({ scope: 'publish_result', publicKeyFrom: { bodyField: 'executorPublicKey' } }),
+      executorResultController.publishResult,
+    );
   } else {
     console.warn('OZ_API_KEY is not set — /executor/tasks/:taskId/result is not mounted');
   }

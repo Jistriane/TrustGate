@@ -1,7 +1,7 @@
 import { Keypair, contract } from '@stellar/stellar-sdk';
 import { StellarConfig } from '../config/stellar';
-import { USDC_DECIMALS } from '../config/usdc';
-import { calculateListingFee } from './listingFee';
+import { calculateListingFeeStroops } from './listingFee';
+import { formatUsdcStroopsToDecimal } from '../utils/money';
 import { withRetry } from '../utils/retry';
 
 export class InsufficientBalanceError extends Error {}
@@ -18,7 +18,8 @@ interface TokenContractMethods {
 type TokenClient = contract.Client & TokenContractMethods;
 
 export interface ChargeResult {
-  feeAmount: number;
+  feeAmount: string;
+  feeStroops: string;
   txHash: string;
 }
 
@@ -28,8 +29,8 @@ function isInsufficientBalanceError(err: unknown): boolean {
 }
 
 export interface MppChargeServiceLike {
-  calculateFee(reservePrice: number): number;
-  chargeListingFee(requester: Keypair, reservePrice: number): Promise<ChargeResult>;
+  calculateFeeStroops(reservePriceStroops: bigint): bigint;
+  chargeListingFee(requester: Keypair, reservePriceStroops: bigint): Promise<ChargeResult>;
 }
 
 /**
@@ -49,13 +50,13 @@ export class MppChargeService implements MppChargeServiceLike {
     private readonly marketplaceWallet: string,
   ) {}
 
-  calculateFee(reservePrice: number): number {
-    return calculateListingFee(reservePrice);
+  calculateFeeStroops(reservePriceStroops: bigint): bigint {
+    return calculateListingFeeStroops(reservePriceStroops);
   }
 
-  async chargeListingFee(requester: Keypair, reservePrice: number): Promise<ChargeResult> {
-    const feeAmount = this.calculateFee(reservePrice);
-    const amountUnits = BigInt(Math.round(feeAmount * 10 ** USDC_DECIMALS));
+  async chargeListingFee(requester: Keypair, reservePriceStroops: bigint): Promise<ChargeResult> {
+    const feeStroops = this.calculateFeeStroops(reservePriceStroops);
+    const feeAmount = formatUsdcStroopsToDecimal(feeStroops);
 
     return withRetry(async () => {
       const { signTransaction, signAuthEntry } = contract.basicNodeSigner(
@@ -85,7 +86,7 @@ export class MppChargeService implements MppChargeServiceLike {
         tx = await client.transfer({
           from: requester.publicKey(),
           to: this.marketplaceWallet,
-          amount: amountUnits,
+          amount: feeStroops,
         });
       } catch (err) {
         if (isInsufficientBalanceError(err)) {
@@ -98,7 +99,7 @@ export class MppChargeService implements MppChargeServiceLike {
 
       try {
         const sent = await tx.signAndSend({ force: true });
-        return { feeAmount, txHash: sent.sendTransactionResponse?.hash ?? '' };
+        return { feeAmount, feeStroops: feeStroops.toString(), txHash: sent.sendTransactionResponse?.hash ?? '' };
       } catch (err) {
         if (isInsufficientBalanceError(err)) {
           throw new InsufficientBalanceError(

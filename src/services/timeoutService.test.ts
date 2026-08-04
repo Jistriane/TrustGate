@@ -8,8 +8,8 @@ import { TimeoutService } from './timeoutService';
 function makeTask(overrides: Partial<Task> = {}): Task {
   return {
     id: 'task-1',
-    requester: 'GA5G6L2CGI6QJUOE4PPRVMAZVRRBYJ3HOGQ2NWFKKMGBJB7SZIXIKSTO',
-    reservePrice: 1000,
+    requesterPublicKey: 'GA5G6L2CGI6QJUOE4PPRVMAZVRRBYJ3HOGQ2NWFKKMGBJB7SZIXIKSTO',
+    reservePriceStroops: 10000000000n,
     description: 'Do something useful',
     deadline: new Date(Date.now() - 1000).toISOString(),
     status: 'ASSIGNED',
@@ -21,9 +21,9 @@ function makeBid(overrides: Partial<Bid> = {}): Bid {
   return {
     id: 'bid-1',
     taskId: 'task-1',
-    executor: 'GBEXECUTOR000000000000000000000000000000000000000000000',
-    amount: 500,
-    collateral: 50,
+    executorPublicKey: 'GBEXECUTOR000000000000000000000000000000000000000000000',
+    amountStroops: 5000000000n,
+    collateralStroops: 500000000n,
     escrowId: 'CESCROW00000000000000000000000000000000000000000000000',
     status: 'SELECTED',
     createdAt: new Date().toISOString(),
@@ -50,16 +50,16 @@ describe('TimeoutService.runOnce', () => {
     const escrowService = makeFakeEscrowService();
 
     const task = makeTask();
-    taskRepository.save(task);
+    await taskRepository.save(task);
     const bid = makeBid();
-    bidRepository.save(bid);
+    await bidRepository.save(bid);
 
     const timeoutService = new TimeoutService(taskRepository, bidRepository, escrowService);
     const result = await timeoutService.runOnce();
 
     expect(result.expiredTaskIds).toEqual([task.id]);
-    expect(taskRepository.findById(task.id)?.status).toBe('EXPIRED');
-    expect(escrowService.confiscate).toHaveBeenCalledWith(bid.escrowId, bid.collateral);
+    await expect(taskRepository.findById(task.id)).resolves.toMatchObject({ status: 'EXPIRED' });
+    expect(escrowService.confiscate).toHaveBeenCalledWith(bid.escrowId, 50);
   });
 
   it('ignores tasks that are not ASSIGNED', async () => {
@@ -68,13 +68,13 @@ describe('TimeoutService.runOnce', () => {
     const escrowService = makeFakeEscrowService();
 
     const task = makeTask({ status: 'OPEN' });
-    taskRepository.save(task);
+    await taskRepository.save(task);
 
     const timeoutService = new TimeoutService(taskRepository, bidRepository, escrowService);
     const result = await timeoutService.runOnce();
 
     expect(result.expiredTaskIds).toEqual([]);
-    expect(taskRepository.findById(task.id)?.status).toBe('OPEN');
+    await expect(taskRepository.findById(task.id)).resolves.toMatchObject({ status: 'OPEN' });
     expect(escrowService.confiscate).not.toHaveBeenCalled();
   });
 
@@ -84,14 +84,14 @@ describe('TimeoutService.runOnce', () => {
     const escrowService = makeFakeEscrowService();
 
     const task = makeTask({ deadline: new Date(Date.now() + 86400000).toISOString() });
-    taskRepository.save(task);
-    bidRepository.save(makeBid());
+    await taskRepository.save(task);
+    await bidRepository.save(makeBid());
 
     const timeoutService = new TimeoutService(taskRepository, bidRepository, escrowService);
     const result = await timeoutService.runOnce();
 
     expect(result.expiredTaskIds).toEqual([]);
-    expect(taskRepository.findById(task.id)?.status).toBe('ASSIGNED');
+    await expect(taskRepository.findById(task.id)).resolves.toMatchObject({ status: 'ASSIGNED' });
   });
 
   it('skips a task with no selected bid without marking it expired', async () => {
@@ -100,13 +100,13 @@ describe('TimeoutService.runOnce', () => {
     const escrowService = makeFakeEscrowService();
 
     const task = makeTask();
-    taskRepository.save(task);
+    await taskRepository.save(task);
 
     const timeoutService = new TimeoutService(taskRepository, bidRepository, escrowService);
     const result = await timeoutService.runOnce();
 
     expect(result.expiredTaskIds).toEqual([]);
-    expect(taskRepository.findById(task.id)?.status).toBe('ASSIGNED');
+    await expect(taskRepository.findById(task.id)).resolves.toMatchObject({ status: 'ASSIGNED' });
     expect(escrowService.confiscate).not.toHaveBeenCalled();
   });
 
@@ -118,13 +118,13 @@ describe('TimeoutService.runOnce', () => {
     } as unknown as EscrowService;
 
     const task = makeTask();
-    taskRepository.save(task);
-    bidRepository.save(makeBid());
+    await taskRepository.save(task);
+    await bidRepository.save(makeBid());
 
     const timeoutService = new TimeoutService(taskRepository, bidRepository, escrowService);
     const result = await timeoutService.runOnce();
 
     expect(result.expiredTaskIds).toEqual([]);
-    expect(taskRepository.findById(task.id)?.status).toBe('ASSIGNED');
+    await expect(taskRepository.findById(task.id)).resolves.toMatchObject({ status: 'ASSIGNED' });
   });
 });
