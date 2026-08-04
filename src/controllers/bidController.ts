@@ -6,12 +6,14 @@ import { Bid } from '../models/bid';
 import { TaskRepository } from '../repositories/taskRepository';
 import { BidRepository } from '../repositories/bidRepository';
 import { EscrowServiceLike } from '../services/escrowService';
+import { ExecutorNotAllowedError, PolicyService } from '../services/policyService';
 
 export class BidController {
   constructor(
     private readonly taskRepository: TaskRepository,
     private readonly escrowService: EscrowServiceLike,
     private readonly bidRepository: BidRepository,
+    private readonly policyService: PolicyService,
   ) {}
 
   create = async (req: Request, res: Response): Promise<void> => {
@@ -44,6 +46,19 @@ export class BidController {
 
     if (task.status !== 'OPEN') {
       res.status(409).json({ error: `task is not open for bids (status: ${task.status})` });
+      return;
+    }
+
+    // Enforce the on-chain Registry allow-list before locking collateral.
+    // Only registered executors are permitted to bid.
+    try {
+      await this.policyService.authorizeExecutorPayment(executorKeypair.publicKey());
+    } catch (err) {
+      if (err instanceof ExecutorNotAllowedError) {
+        res.status(403).json({ error: 'executor is not registered' });
+        return;
+      }
+      res.status(500).json({ error: 'executor authorization failed', detail: (err as Error).message });
       return;
     }
 

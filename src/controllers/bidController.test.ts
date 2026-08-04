@@ -91,6 +91,101 @@ describe('POST /bids', () => {
     expect(response.status).toBe(400);
   });
 
+  it('rejects bids from executors that are not on the allow-list', async () => {
+    const fakeRegistryService = {
+      async isRegistered(_: string) {
+        return false;
+      },
+      async registerExecutor() {
+        throw new Error('not implemented');
+      },
+      async getExecutor() {
+        throw new Error('not implemented');
+      },
+    };
+
+    const fakeEscrowService = {
+      async createEscrow() {
+        return 'CFAKEESCROWID000000000000000000000000000000000000';
+      },
+      async releaseMilestone() {
+        throw new Error('not implemented');
+      },
+      async confiscate() {
+        throw new Error('not implemented');
+      },
+    };
+
+    const app = createApp({
+      registryService: fakeRegistryService,
+      escrowService: fakeEscrowService,
+    });
+    const taskRepository = app.get('taskRepository') as TaskRepository;
+    const task = makeOpenTask({ id: 'task-unauthorized' });
+    taskRepository.save(task);
+
+    const executor = Keypair.random();
+    const response = await request(app).post('/bids').send({
+      taskId: task.id,
+      executor: executor.publicKey(),
+      secret: executor.secret(),
+      amount: 90,
+      collateral: 10,
+    });
+
+    expect(response.status).toBe(403);
+    expect(response.body).toEqual({ error: 'executor is not registered' });
+  });
+
+  it('creates a bid when the executor is registered and escrow is created', async () => {
+    const fakeRegistryService = {
+      async isRegistered(_: string) {
+        return true;
+      },
+      async registerExecutor() {
+        throw new Error('not implemented');
+      },
+      async getExecutor() {
+        throw new Error('not implemented');
+      },
+    };
+
+    const fakeEscrowService = {
+      async createEscrow() {
+        return 'CFAKEESCROWID000000000000000000000000000000000000';
+      },
+      async releaseMilestone() {
+        throw new Error('not implemented');
+      },
+      async confiscate() {
+        throw new Error('not implemented');
+      },
+    };
+
+    const app = createApp({
+      registryService: fakeRegistryService,
+      escrowService: fakeEscrowService,
+    });
+    const taskRepository = app.get('taskRepository') as TaskRepository;
+    const task = makeOpenTask({ id: 'task-authorized' });
+    taskRepository.save(task);
+
+    const executor = Keypair.random();
+    const response = await request(app).post('/bids').send({
+      taskId: task.id,
+      executor: executor.publicKey(),
+      secret: executor.secret(),
+      amount: 90,
+      collateral: 10,
+    });
+
+    expect(response.status).toBe(201);
+    expect(response.body.taskId).toBe(task.id);
+    expect(response.body.executor).toBe(executor.publicKey());
+    expect(response.body.escrowId).toBe('CFAKEESCROWID000000000000000000000000000000000000');
+    expect(response.body.status).toBe('PENDING');
+  });
+
   describeIfRealEscrowApi('with a live Trustless Work API key', () => {
     it('creates the escrow on the network and saves the bid', async () => {
       const app = createApp();

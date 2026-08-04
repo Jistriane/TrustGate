@@ -12,6 +12,7 @@ import { getUsdcSacContractId } from './config/usdc';
 import { RegistryService, RegistryServiceLike } from './services/registryService';
 import { MppChargeService, MppChargeServiceLike } from './services/mppChargeService';
 import { FeedTick, TaskFeedService } from './services/taskFeedService';
+import { PolicyService } from './services/policyService';
 import { calculateListingFee } from './services/listingFee';
 import { createTaskSchema } from './models/taskSchema';
 import { createListingFeeGateFactory } from './config/mppCharge';
@@ -39,6 +40,8 @@ export interface AppOverrides {
   escrowService?: EscrowServiceLike;
   /** Swap the real MPP Charge gate (testnet/pubnet listing-fee path) for a fake — tests. */
   listingFeeGateFactory?: (amount: string, description: string) => Promise<RequestHandler>;
+  /** Inject a fake x402 payment middleware for the executor result endpoint in tests. */
+  resultPaymentGate?: RequestHandler;
 }
 
 export function createApp(overrides: AppOverrides = {}): Express {
@@ -81,6 +84,7 @@ export function createApp(overrides: AppOverrides = {}): Express {
   const taskRepository = new TaskRepository();
   const bidRepository = new BidRepository();
   const auctionService = new AuctionService(taskRepository, bidRepository);
+  const policyService = new PolicyService(registryService);
 
   let listingFeeGateFactory: ((amount: string, description: string) => Promise<RequestHandler>) | undefined;
   if (config.network !== 'local') {
@@ -128,7 +132,7 @@ export function createApp(overrides: AppOverrides = {}): Express {
     escrowService,
     bidRepository,
   );
-  const bidController = new BidController(taskRepository, escrowService, bidRepository);
+  const bidController = new BidController(taskRepository, escrowService, bidRepository, policyService);
   const timeoutService = new TimeoutService(taskRepository, bidRepository, escrowService);
 
   const app = express();
@@ -449,11 +453,10 @@ export function createApp(overrides: AppOverrides = {}): Express {
     }
   });
 
+  let resultPaymentGate: RequestHandler | undefined = overrides.resultPaymentGate;
   const ozApiKey = process.env.OZ_API_KEY;
-  if (ozApiKey) {
-    const executorResultService = new ExecutorResultService();
-    const executorResultController = new ExecutorResultController(executorResultService);
-    const resultPaymentGate = createResultPaymentGate({
+  if (!resultPaymentGate && ozApiKey) {
+    resultPaymentGate = createResultPaymentGate({
       network: process.env.X402_NETWORK ?? 'stellar:testnet',
       recipient: process.env.EXECUTOR_WALLET ?? marketplaceWallet,
       price: process.env.EXECUTOR_RESULT_PRICE ?? '$0.05',
@@ -463,11 +466,20 @@ export function createApp(overrides: AppOverrides = {}): Express {
       route: 'GET /executor/tasks/:taskId/result',
       description: 'Task result delivery',
     });
+  }
+
+  if (resultPaymentGate) {
+    const executorResultService = new ExecutorResultService();
+    const executorResultController = new ExecutorResultController(
+      executorResultService,
+      taskRepository,
+      bidRepository,
+    );
     /**
      * @openapi
      * /executor/tasks/{taskId}/result:
      *   get:
-     *     summary: Fetch a task's result, gated behind an x402 payment (only mounted when OZ_API_KEY is set)
+     *     summary: Fetch a task's result, gated behind an x402 payment (only mounted when OZ_API_KEY is set or a resultPaymentGate override is provided)
      *     tags: [Executor]
      *     parameters:
      *       - { name: taskId, in: path, required: true, schema: { type: string } }
