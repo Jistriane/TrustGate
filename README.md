@@ -72,6 +72,7 @@ Once it's up:
 | `USDC_ISSUER` | ✅ | Classic USDC asset issuer (G...) — the app derives the SAC contract ID from this + `NETWORK`. |
 | `REGISTRY_CONTRACT_ID` | ✅ | Set by `npm run deploy:registry`. |
 | `TRUSTLESS_WORK_API_KEY` | ✅ | [trustlesswork.com](https://blocks.trustlesswork.com) API key — required for bid escrow (`POST /bids`, `POST /tasks/:id/complete`). |
+| `RESULT_PUBLISHED_WEBHOOK_URL` | | Optional webhook called when an executor publishes a result (`POST /executor/tasks/:taskId/result`). |
 | `OZ_API_KEY` | | [OZ Channels](https://channels.openzeppelin.com/testnet/gen) key. Without it, `GET /executor/tasks/:taskId/result` (x402-gated) isn't mounted — the rest of the app still runs. |
 | `X402_NETWORK` | | CAIP-2 network id for x402, e.g. `stellar:testnet`. |
 | `X402_FACILITATOR_URL` | | OZ Channels facilitator URL. |
@@ -82,6 +83,20 @@ Once it's up:
 
 Full list with inline comments in `.env.example`; a ready-made testnet config lives in
 `.env.testnet` (see [testnet section](#running-against-real-stellar-testnet)).
+
+### Webhook receiver (local)
+
+For quick local testing, run a simple webhook receiver:
+
+```bash
+npm run webhook:receiver
+```
+
+Then point the app to it (for `start:dev` outside Docker):
+
+```bash
+RESULT_PUBLISHED_WEBHOOK_URL=http://localhost:4000/webhooks/result-published npm run start:dev
+```
 
 ## Testing
 
@@ -102,8 +117,11 @@ curl http://localhost:3000/health
 ```
 
 The `app` service waits for Stellar and Redis to be reachable (`scripts/wait-for-it.sh`)
-before starting, reads secrets from `.env` via `env_file`, and overrides the
+before starting, reads secrets from `.env.docker` via `env_file`, and overrides the
 network-specific URLs to point at the in-Compose-network hostnames.
+
+For Docker, the compose file reads configuration from `.env.docker` (gitignored). You can
+start from `.env.example` and copy the needed values over.
 
 ## Running against real Stellar testnet
 

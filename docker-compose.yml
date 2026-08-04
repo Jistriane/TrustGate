@@ -51,7 +51,7 @@ services:
       postgres:
         condition: service_healthy
     env_file:
-      - .env
+      - .env.docker
     environment:
       - NODE_ENV=production
       - PORT=3000

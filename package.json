@@ -8,6 +8,7 @@
     "start": "node dist/server.js",
     "start:dev": "ts-node-dev --respawn --transpile-only src/server.ts",
     "db:migrate": "ts-node --transpile-only scripts/db-migrate.ts",
+    "webhook:receiver": "ts-node --transpile-only scripts/webhook-receiver.ts",
     "test": "jest",
     "test:e2e": "jest --config jest.config.js --testPathPattern src/e2e",
     "lint": "eslint . --ext .ts",

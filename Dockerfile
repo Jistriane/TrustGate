@@ -13,6 +13,7 @@ ENV NODE_ENV=production
 COPY package*.json .npmrc ./
 RUN npm ci --omit=dev
 COPY --from=builder /app/dist ./dist
+COPY migrations ./migrations
 COPY scripts/wait-for-it.sh ./scripts/wait-for-it.sh
 RUN chmod +x ./scripts/wait-for-it.sh
 EXPOSE 3000

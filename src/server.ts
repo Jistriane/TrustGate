@@ -18,6 +18,7 @@ import { PgBidRepository } from './repositories/bidRepository';
 import { EscrowService } from './services/escrowService';
 import { OutboxService } from './services/outboxService';
 import { WebhookService } from './services/webhookService';
+import { isTransientNetworkError, withRetry } from './utils/retry';
 
 async function fundOnFriendbot(horizonUrl: string, publicKey: string): Promise<void> {
   const res = await fetch(`${horizonUrl}/friendbot?addr=${publicKey}`);
@@ -36,7 +37,11 @@ async function checkStellarConnectivity(): Promise<void> {
 
   if (!process.env.ADMIN_SECRET && config.network === 'local') {
     console.log(`No ADMIN_SECRET set, funding throwaway admin ${admin.publicKey()} via friendbot`);
-    await fundOnFriendbot(config.horizonUrl, admin.publicKey());
+    await withRetry(() => fundOnFriendbot(config.horizonUrl, admin.publicKey()), {
+      retries: 8,
+      baseDelayMs: 500,
+      shouldRetry: (err) => isTransientNetworkError(err) || String(err).includes('Friendbot funding failed: 5'),
+    });
   }
 
   const accountService = new AccountService(config);
