@@ -127,6 +127,51 @@ export class WorkerService {
 
     const tick = async () => {
       await publisher.publishOnce();
+      await consumer.autoClaimOnce(30_000, async (entry) => {
+        const eventId = String(entry.fields.id ?? '');
+        const type = String(entry.fields.type ?? '');
+        const payloadRaw = entry.fields.payload ?? 'null';
+        if (!eventId || !type) {
+          await consumer.ack(entry.id);
+          return;
+        }
+
+        const handlerName = `event:${type}`;
+        const started = await this.consumptions.tryStart({
+          handlerName,
+          eventId,
+          streamEntryId: entry.id,
+          maxAttempts: this.options.maxAttempts,
+          nextRetryAt: null,
+        });
+
+        if (!started.started) {
+          await consumer.ack(entry.id);
+          return;
+        }
+
+        let payload: unknown;
+        try {
+          payload = JSON.parse(payloadRaw);
+        } catch {
+          payload = null;
+        }
+
+        try {
+          await this.dispatch(eventId, type, payload);
+          await this.consumptions.markSucceeded(handlerName, eventId);
+        } catch (err) {
+          const attempt = started.record?.attempts ?? 1;
+          await this.consumptions.markFailed({
+            handlerName,
+            eventId,
+            error: (err as Error).message,
+            nextRetryAt: this.computeBackoff(attempt),
+          });
+        } finally {
+          await consumer.ack(entry.id);
+        }
+      });
       await consumer.pollOnce(async (entry) => {
         const eventId = String(entry.fields.id ?? '');
         const type = String(entry.fields.type ?? '');

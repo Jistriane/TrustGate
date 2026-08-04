@@ -19,6 +19,7 @@ import { EscrowService } from './services/escrowService';
 import { OutboxService } from './services/outboxService';
 import { WebhookService } from './services/webhookService';
 import { isTransientNetworkError, withRetry } from './utils/retry';
+import { MockEscrowService, shouldMockExternals } from './services/mockExternalServices';
 
 async function fundOnFriendbot(horizonUrl: string, publicKey: string): Promise<void> {
   const res = await fetch(`${horizonUrl}/friendbot?addr=${publicKey}`);
@@ -35,20 +36,32 @@ async function checkStellarConnectivity(): Promise<void> {
     ? loadKeypairFromEnv('ADMIN_SECRET')
     : generateKeypair();
 
-  if (!process.env.ADMIN_SECRET && config.network === 'local') {
-    console.log(`No ADMIN_SECRET set, funding throwaway admin ${admin.publicKey()} via friendbot`);
-    await withRetry(() => fundOnFriendbot(config.horizonUrl, admin.publicKey()), {
-      retries: 8,
-      baseDelayMs: 500,
-      shouldRetry: (err) => isTransientNetworkError(err) || String(err).includes('Friendbot funding failed: 5'),
-    });
+  if (config.network === 'local') {
+    try {
+      const label = process.env.ADMIN_SECRET ? 'ADMIN_SECRET' : 'throwaway admin';
+      console.log(`Funding ${label} ${admin.publicKey()} via friendbot`);
+      await withRetry(() => fundOnFriendbot(config.horizonUrl, admin.publicKey()), {
+        retries: 8,
+        baseDelayMs: 500,
+        shouldRetry: (err) => isTransientNetworkError(err) || String(err).includes('Friendbot funding failed: 5'),
+      });
+    } catch (err) {
+      console.warn(`Friendbot funding skipped: ${(err as Error).message}`);
+    }
   }
 
   const accountService = new AccountService(config);
-  const xlmBalance = await accountService.getXlmBalance(admin.publicKey());
-
-  console.log(`Admin account: ${admin.publicKey()}`);
-  console.log(`XLM balance: ${xlmBalance}`);
+  try {
+    const xlmBalance = await withRetry(() => accountService.getXlmBalance(admin.publicKey()), {
+      retries: 8,
+      baseDelayMs: 500,
+      shouldRetry: isTransientNetworkError,
+    });
+    console.log(`Admin account: ${admin.publicKey()}`);
+    console.log(`XLM balance: ${xlmBalance}`);
+  } catch (err) {
+    console.warn(`Skipping XLM balance check: ${(err as Error).message}`);
+  }
 }
 
 async function main(): Promise<void> {
@@ -76,24 +89,29 @@ async function main(): Promise<void> {
     const bidRepository = new PgBidRepository(pool);
 
     const config = loadStellarConfig();
-    const trustlessWorkApiKey = process.env.TRUSTLESS_WORK_API_KEY;
-    if (!trustlessWorkApiKey) {
-      throw new Error('TRUSTLESS_WORK_API_KEY is not set');
-    }
-    const usdcIssuer = process.env.USDC_ISSUER;
-    if (!usdcIssuer) {
-      throw new Error('USDC_ISSUER is not set');
-    }
-    const marketplaceWallet = process.env.MARKETPLACE_WALLET;
-    if (!marketplaceWallet) {
-      throw new Error('MARKETPLACE_WALLET is not set');
-    }
-    const escrowService = new EscrowService({
-      apiKey: trustlessWorkApiKey,
-      network: config.network === 'pubnet' ? 'mainnet' : 'testnet',
-      marketplaceWallet,
-      usdcIssuer,
-    });
+    const mockExternals = shouldMockExternals() && config.network === 'local';
+    const escrowService = mockExternals
+      ? new MockEscrowService()
+      : (() => {
+          const trustlessWorkApiKey = process.env.TRUSTLESS_WORK_API_KEY;
+          if (!trustlessWorkApiKey) {
+            throw new Error('TRUSTLESS_WORK_API_KEY is not set');
+          }
+          const usdcIssuer = process.env.USDC_ISSUER;
+          if (!usdcIssuer) {
+            throw new Error('USDC_ISSUER is not set');
+          }
+          const marketplaceWallet = process.env.MARKETPLACE_WALLET;
+          if (!marketplaceWallet) {
+            throw new Error('MARKETPLACE_WALLET is not set');
+          }
+          return new EscrowService({
+            apiKey: trustlessWorkApiKey,
+            network: config.network === 'pubnet' ? 'mainnet' : 'testnet',
+            marketplaceWallet,
+            usdcIssuer,
+          });
+        })();
 
     const outboxService = new OutboxService(outbox);
     const webhookService = new WebhookService({

@@ -38,6 +38,12 @@ import { getDbPool } from './db/pool';
 import { formatUsdcStroopsToDecimal, parseUsdcDecimalToStroops } from './utils/money';
 import { signatureAuth } from './middlewares/signatureAuth';
 import { idempotency } from './middlewares/idempotency';
+import {
+  MockEscrowService,
+  MockMppChargeService,
+  MockRegistryService,
+  shouldMockExternals,
+} from './services/mockExternalServices';
 
 export interface AppOverrides {
   /** Swap the real Registry/Soroban integration for a fake — e2e/mocked tests. */
@@ -54,6 +60,7 @@ export interface AppOverrides {
 
 export function createApp(overrides: AppOverrides = {}): Express {
   const config = loadStellarConfig();
+  const mockExternals = shouldMockExternals() && config.network === 'local';
 
   const marketplaceWallet =
     process.env.MARKETPLACE_WALLET ??
@@ -65,6 +72,8 @@ export function createApp(overrides: AppOverrides = {}): Express {
   let registryService: RegistryServiceLike;
   if (overrides.registryService) {
     registryService = overrides.registryService;
+  } else if (mockExternals) {
+    registryService = new MockRegistryService();
   } else {
     const registryContractId = process.env.REGISTRY_CONTRACT_ID;
     if (!registryContractId) {
@@ -93,7 +102,7 @@ export function createApp(overrides: AppOverrides = {}): Express {
 
   const mppChargeService =
     overrides.mppChargeService ??
-    new MppChargeService(config, getUsdcSacContractId(config), marketplaceWallet);
+    (mockExternals ? new MockMppChargeService() : new MppChargeService(config, getUsdcSacContractId(config), marketplaceWallet));
   const taskFeedService = new TaskFeedService(feedSigningKey);
   const taskRepository = pool ? new PgTaskRepository(pool) : new InMemoryTaskRepository();
   const bidRepository = pool ? new PgBidRepository(pool) : new InMemoryBidRepository();
@@ -125,6 +134,8 @@ export function createApp(overrides: AppOverrides = {}): Express {
   let escrowService: EscrowServiceLike;
   if (overrides.escrowService) {
     escrowService = overrides.escrowService;
+  } else if (mockExternals) {
+    escrowService = new MockEscrowService();
   } else {
     const trustlessWorkApiKey = process.env.TRUSTLESS_WORK_API_KEY;
     if (!trustlessWorkApiKey) {
@@ -544,15 +555,16 @@ export function createApp(overrides: AppOverrides = {}): Express {
     });
   }
 
+  const taskResultRepository = pool ? new PgTaskResultRepository(pool) : new InMemoryTaskResultRepository();
+  const executorResultService = new ExecutorResultService(taskResultRepository);
+  const executorResultController = new ExecutorResultController(
+    executorResultService,
+    taskRepository,
+    bidRepository,
+    outboxService,
+  );
+
   if (resultPaymentGate) {
-    const taskResultRepository = pool ? new PgTaskResultRepository(pool) : new InMemoryTaskResultRepository();
-    const executorResultService = new ExecutorResultService(taskResultRepository);
-    const executorResultController = new ExecutorResultController(
-      executorResultService,
-      taskRepository,
-      bidRepository,
-      outboxService,
-    );
     /**
      * @openapi
      * /executor/tasks/{taskId}/result:
@@ -584,58 +596,59 @@ export function createApp(overrides: AppOverrides = {}): Express {
      *         description: The OZ Channels facilitator is unreachable.
      */
     app.get('/executor/tasks/:taskId/result', resultPaymentGate, executorResultController.getResult);
-    /**
-     * @openapi
-     * /executor/tasks/{taskId}/result:
-     *   post:
-     *     summary: Publish the result payload for an assigned task (selected executor only)
-     *     description: >
-     *       Stores the result server-side and emits `result_published` into the outbox (if enabled).
-     *     tags: [Executor]
-     *     parameters:
-     *       - { name: taskId, in: path, required: true, schema: { type: string } }
-     *     requestBody:
-     *       required: true
-     *       content:
-     *         application/json:
-     *           schema:
-     *             type: object
-     *             required: [executorPublicKey, payload]
-     *             properties:
-     *               executorPublicKey: { type: string, description: "Stellar public key (G...)" }
-     *               payload: {}
-     *     responses:
-     *       201:
-     *         description: Result stored.
-     *         content:
-     *           application/json:
-     *             schema:
-     *               type: object
-     *               properties:
-     *                 taskId: { type: string }
-     *                 payloadHash: { type: string, example: "sha256:..." }
-     *       400:
-     *         description: Invalid request.
-     *         content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
-     *       403:
-     *         description: Only the selected executor can publish.
-     *         content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
-     *       404:
-     *         description: Task not found.
-     *         content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
-     *       409:
-     *         description: Task not ASSIGNED, or no selected bid.
-     *         content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
-     */
-    app.post(
-      '/executor/tasks/:taskId/result',
-      signatureAuth({ matchBodyField: 'executorPublicKey' }),
-      idempotencyMw({ scope: 'publish_result', publicKeyFrom: { bodyField: 'executorPublicKey' } }),
-      executorResultController.publishResult,
-    );
   } else {
-    console.warn('OZ_API_KEY is not set — /executor/tasks/:taskId/result is not mounted');
+    console.warn('OZ_API_KEY is not set — GET /executor/tasks/:taskId/result is not mounted');
   }
+
+  /**
+   * @openapi
+   * /executor/tasks/{taskId}/result:
+   *   post:
+   *     summary: Publish the result payload for an assigned task (selected executor only)
+   *     description: >
+   *       Stores the result server-side and emits `result_published` into the outbox (if enabled).
+   *     tags: [Executor]
+   *     parameters:
+   *       - { name: taskId, in: path, required: true, schema: { type: string } }
+   *     requestBody:
+   *       required: true
+   *       content:
+   *         application/json:
+   *           schema:
+   *             type: object
+   *             required: [executorPublicKey, payload]
+   *             properties:
+   *               executorPublicKey: { type: string, description: "Stellar public key (G...)" }
+   *               payload: {}
+   *     responses:
+   *       201:
+   *         description: Result stored.
+   *         content:
+   *           application/json:
+   *             schema:
+   *               type: object
+   *               properties:
+   *                 taskId: { type: string }
+   *                 payloadHash: { type: string, example: "sha256:..." }
+   *       400:
+   *         description: Invalid request.
+   *         content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+   *       403:
+   *         description: Only the selected executor can publish.
+   *         content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+   *       404:
+   *         description: Task not found.
+   *         content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+   *       409:
+   *         description: Task not ASSIGNED, or no selected bid.
+   *         content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+   */
+  app.post(
+    '/executor/tasks/:taskId/result',
+    signatureAuth({ matchBodyField: 'executorPublicKey' }),
+    idempotencyMw({ scope: 'publish_result', publicKeyFrom: { bodyField: 'executorPublicKey' } }),
+    executorResultController.publishResult,
+  );
 
   /**
    * @openapi

@@ -32,6 +32,8 @@ function parseEntries(raw: unknown): StreamEntry[] {
 }
 
 export class EventConsumer {
+  private claimCursor = '0-0';
+
   constructor(
     private readonly redis: RedisClientType,
     private readonly options: EventConsumerOptions,
@@ -75,6 +77,27 @@ export class EventConsumer {
     if (!Array.isArray(stream) || stream.length < 2) return 0;
 
     const entries = parseEntries(stream[1]);
+    for (const entry of entries) {
+      await handler(entry);
+    }
+    return entries.length;
+  }
+
+  async autoClaimOnce(minIdleMs: number, handler: (entry: StreamEntry) => Promise<void>): Promise<number> {
+    const res = await this.redis.sendCommand([
+      'XAUTOCLAIM',
+      this.options.streamKey,
+      this.options.group,
+      this.options.consumer,
+      String(minIdleMs),
+      this.claimCursor,
+      'COUNT',
+      String(this.options.count),
+    ]);
+
+    if (!Array.isArray(res) || res.length < 2) return 0;
+    this.claimCursor = String(res[0] ?? this.claimCursor);
+    const entries = parseEntries(res[1]);
     for (const entry of entries) {
       await handler(entry);
     }
