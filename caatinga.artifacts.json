@@ -1,0 +1,29 @@
+{
+  "project": "trustgate",
+  "networks": {
+    "local": {
+      "contracts": {
+        "registry": {
+          "contractId": "CCGGEZRF4WUQVKKNXC7SYETD5Y4GKHPAZMG4KMXGNY5BNP3Y37F4ILE7",
+          "wasmHash": "925d51b22b05bcd2a7efdd84129742d81efbc0ffe32bf8736816e09ec8c686d6",
+          "deployedAt": "2026-08-04T02:03:45.736Z",
+          "sourcePath": "./contracts/registry",
+          "wasmPath": "./contracts/registry/target/wasm32v1-none/release/registry.wasm",
+          "dependencies": [],
+          "resolvedDeployArgs": {},
+          "metadata": {
+            "rustcVersion": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+            "caatingaVersion": "3.9.1",
+            "network": "local",
+            "timestamp": "2026-08-04T02:03:45.736Z",
+            "checksum": "925d51b22b05bcd2a7efdd84129742d81efbc0ffe32bf8736816e09ec8c686d6"
+          }
+        }
+      },
+      "dependencyGraph": {
+        "registry": []
+      }
+    }
+  },
+  "version": 1
+}

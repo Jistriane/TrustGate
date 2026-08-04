@@ -1,0 +1,63 @@
+services:
+  stellar-quickstart:
+    image: stellar/quickstart:latest
+    container_name: trustgate-stellar
+    command: --${NETWORK:-local} --enable-soroban-rpc
+    ports:
+      - '8000:8000'
+    environment:
+      - NETWORK=${NETWORK:-local}
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:8000/health']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - stellar-data:/opt/stellar
+
+  redis:
+    image: redis:7-alpine
+    container_name: trustgate-redis
+    # Not published to the host — only reachable at redis:6379 from other
+    # containers on this network. Avoids clashing with a host-level Redis.
+    volumes:
+      - redis-data:/data
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: trustgate-app
+    depends_on:
+      stellar-quickstart:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - NETWORK=${NETWORK:-local}
+      - STELLAR_RPC_URL=http://stellar-quickstart:8000/soroban/rpc
+      - STELLAR_HORIZON_URL=http://stellar-quickstart:8000
+      - REDIS_URL=redis://redis:6379
+    ports:
+      - '3000:3000'
+    command:
+      - ./scripts/wait-for-it.sh
+      - stellar-quickstart:8000
+      - -t
+      - '60'
+      - --
+      - ./scripts/wait-for-it.sh
+      - redis:6379
+      - -t
+      - '30'
+      - --
+      - node
+      - dist/server.js
+
+volumes:
+  stellar-data:
+  redis-data:

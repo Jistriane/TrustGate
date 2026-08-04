@@ -1,0 +1,31 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "commonjs",
+    "lib": ["ES2022"],
+    "outDir": "dist",
+    "rootDir": "src",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "declaration": false,
+    "sourceMap": true,
+    "moduleResolution": "node",
+    "baseUrl": ".",
+    "paths": {
+      "@x402/express": ["./node_modules/@x402/express/dist/cjs/index.d.ts"],
+      "@x402/core/server": ["./node_modules/@x402/core/dist/cjs/server/index.d.ts"],
+      "@x402/stellar/exact/server": ["./node_modules/@x402/stellar/dist/cjs/exact/server/index.d.ts"],
+      "@x402/stellar/exact/client": ["./node_modules/@x402/stellar/dist/cjs/exact/client/index.d.ts"],
+      "@x402/fetch": ["./node_modules/@x402/fetch/dist/cjs/index.d.ts"]
+    },
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules", "dist", "**/*.test.ts", "src/contracts/bindings/**"]
+}
