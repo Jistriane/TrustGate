@@ -404,3 +404,46 @@ This is a conservative rollback checklist intended to be followed even under pre
 - 429 rate returns to baseline.
 - `/auth/nonce` latency remains stable (watch p95).
 - No sustained increase in worker tick errors (Redis pressure can cascade).
+
+#### P0: External dependencies degraded (Webhook / Trustless Work)
+
+This system intentionally depends on external services for certain flows. When they degrade, the correct response is to contain blast radius and keep internal state consistent.
+
+**Detection**
+
+- Worker tick errors rise, or dispatch failures increase:
+  - `sum(rate(tg_worker_dispatch_total{result="failed"}[5m])) by (type)`
+- Due retries persist for a specific handler:
+  - `tg_worker_due_retries{handler="event:result_published"} > 0`
+  - `tg_worker_due_retries{handler="event:task_completion_requested"} > 0`
+- Logs show:
+  - `webhook failed: <status>`
+  - Trustless Work release errors
+
+**Impact**
+
+- Webhook failures:
+  - `result_published` notifications may be delayed or dropped (depending on downstream durability).
+  - Core marketplace state remains consistent (result is stored in DB); only notification is impacted.
+- Trustless Work failures:
+  - escrow releases may be delayed; tasks can remain in `COMPLETING` longer.
+  - Requires careful monitoring because user-facing completion is delayed.
+
+**Immediate actions**
+
+1) Identify which dependency is failing:
+   - If failures are mostly `result_published`: suspect downstream webhook URL or network.
+   - If failures are mostly `task_completion_requested`: suspect Trustless Work connectivity/credentials.
+2) Mitigate by reducing pressure and isolating failures:
+   - Ensure downstream endpoints are reachable (DNS/TLS/network).
+   - If webhook target is down, fix it or temporarily disable it (set `RESULT_PUBLISHED_WEBHOOK_URL` empty) and redeploy.
+   - For Trustless Work, validate `TRUSTLESS_WORK_API_KEY` and service status; if service is down, communicate delay and keep retries.
+3) Validate recovery:
+   - Dispatch failures rate decreases.
+   - Due retries return to 0 over time.
+   - Worker tick success resumes without long latency spikes.
+
+**Aftercare**
+
+- Add explicit timeouts and circuit breakers for external calls if needed.
+- Ensure webhook consumers are idempotent and durable (at-least-once delivery is expected).
