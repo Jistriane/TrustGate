@@ -31,6 +31,7 @@ import { ExecutorController } from './controllers/executorController';
 import { TaskController } from './controllers/taskController';
 import { BidController } from './controllers/bidController';
 import { ExecutorResultController } from './controllers/executorResultController';
+import { AuthController } from './controllers/authController';
 import { errorHandler } from './middlewares/errorHandler';
 import { adminAuth } from './middlewares/adminAuth';
 import { createResultPaymentGate } from './config/x402';
@@ -211,6 +212,51 @@ export function createApp(overrides: AppOverrides = {}): Express {
   app.get('/health', (_req, res) => {
     res.status(200).json({ status: 'ok' });
   });
+
+  const authController = new AuthController();
+  /**
+   * @openapi
+   * /auth/nonce:
+   *   post:
+   *     summary: Issue a server nonce for signed requests (recommended for testnet)
+   *     description: >
+   *       Returns a one-time nonce stored in Redis. The client must include the returned
+   *       `timestamp` and `nonce` in the signature headers for the next request.
+   *     tags: [Auth]
+   *     requestBody:
+   *       required: true
+   *       content:
+   *         application/json:
+   *           schema:
+   *             type: object
+   *             required: [publicKey]
+   *             properties:
+   *               publicKey: { type: string, description: "Stellar public key (G...)" }
+   *     responses:
+   *       200:
+   *         description: Nonce issued.
+   *         content:
+   *           application/json:
+   *             schema:
+   *               type: object
+   *               required: [version, publicKey, timestamp, nonce, ttlSeconds]
+   *               properties:
+   *                 version: { type: integer, example: 1 }
+   *                 publicKey: { type: string }
+   *                 timestamp: { type: integer, description: "Server timestamp in ms" }
+   *                 nonce: { type: string, description: "UUID" }
+   *                 ttlSeconds: { type: integer, example: 600 }
+   *       400:
+   *         description: Invalid request.
+   *         content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+   *       429:
+   *         description: Rate limited.
+   *         content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+   *       503:
+   *         description: Redis unavailable.
+   *         content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+   */
+  app.post('/auth/nonce', authController.issueNonce);
 
   const healthCheckService = new HealthCheckService(config);
   /**

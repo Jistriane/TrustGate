@@ -21,6 +21,15 @@ export const swaggerSpec = swaggerJsdoc({
           name: 'x-admin-secret',
           description: 'Shared secret matching the server\'s ADMIN_SECRET env var.',
         },
+        tgSignedRequest: {
+          type: 'apiKey',
+          in: 'header',
+          name: 'x-tg-signature',
+          description:
+            'Signed request authentication (testnet/pubnet). Requires headers: x-tg-public-key, x-tg-timestamp, ' +
+            'x-tg-nonce, x-tg-signature (base64 recommended). Canonical payload: METHOD\\nPATH\\nTIMESTAMP\\nNONCE\\nSHA256(rawBody). ' +
+            'Use POST /auth/nonce to obtain a server-issued nonce+timestamp.',
+        },
       },
       schemas: {
         Error: {
