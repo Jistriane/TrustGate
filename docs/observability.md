@@ -366,3 +366,41 @@ This is a conservative rollback checklist intended to be followed even under pre
 
 - Inspect DB metrics (connections, slow queries) and ensure pooling settings are sane.
 - If the incident coincided with a deploy/migration, create a follow-up task to harden migration/rollback procedures.
+
+#### P1: Security / abuse (429 spikes on signed endpoints)
+
+**Detection**
+
+- Spike in `tg_auth_signature_requests_total{status="429"}` (overall or by `route`).
+- Often correlated with increases in `tg_auth_signature_failures_total{reason,route}`.
+
+**Impact**
+
+- Legitimate clients may be throttled if they share NAT IPs or are retrying aggressively.
+- Increased Redis load due to rate-limit counters and nonce usage patterns.
+
+**Immediate actions**
+
+1) Identify the blast radius:
+   - Which `route` is affected:
+     - `sum(rate(tg_auth_signature_requests_total{status="429"}[5m])) by (route)`
+   - Top failure reasons:
+     - `topk(10, sum(rate(tg_auth_signature_failures_total[5m])) by (reason, route))`
+2) Differentiate bug vs abuse:
+   - If 401 spikes precede 429: likely buggy client release (canonical mismatch, nonce reuse).
+   - If 429 spikes without 401: could be legitimate high-volume usage or a tight retry loop.
+
+**Mitigation (preferred order)**
+
+1) Fix/rollback the client causing failures.
+2) Apply edge protections (WAF/CDN) to reduce untrusted traffic:
+   - per-IP rate limiting on the API gateway
+   - bot protection / challenge for suspicious traffic
+3) If you must tune server rate limits, do it deliberately and re-validate:
+   - Increasing limits can hide client bugs and increase Redis load.
+
+**Validation**
+
+- 429 rate returns to baseline.
+- `/auth/nonce` latency remains stable (watch p95).
+- No sustained increase in worker tick errors (Redis pressure can cascade).
