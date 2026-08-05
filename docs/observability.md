@@ -332,3 +332,37 @@ This is a conservative rollback checklist intended to be followed even under pre
 
 - If the rollback fixed it, open a follow-up issue for root cause and add a regression test if applicable.
 - If the rollback did not fix it within one cycle, stop and reassess the hypothesis; avoid serial “random” rollbacks.
+
+#### P0: Postgres down / degraded
+
+**Detection**
+
+- `/health/detailed` reports DB down (when configured), or worker shows tick errors.
+- Symptoms:
+  - API endpoints that require persistence fail with 5xx (especially on non-local networks).
+  - Worker retries increase and/or tick errors rise.
+
+**Impact**
+
+- State-changing requests may fail (repository writes).
+- Outbox publishing may stall if new events cannot be persisted or marked processed.
+- Retry bookkeeping (`event_consumptions`) may fail, increasing duplicate work risk (though handlers are designed for idempotency).
+
+**Immediate actions**
+
+1) Confirm the failure scope:
+   - Check Postgres container/service status and logs.
+   - Verify connectivity from app/worker to Postgres.
+2) Mitigate:
+   - Restart Postgres if unhealthy (prefer rolling/manged procedures in production).
+   - If saturation, increase connections/CPU/IOPS or reduce load.
+   - If migrations were recently applied, verify schema compatibility.
+3) Validate recovery:
+   - DB connectivity is restored.
+   - Worker ticks recover (`tg_worker_tick_total{status="success"}` increases).
+   - Outbox publish failures stop increasing.
+
+**Aftercare**
+
+- Inspect DB metrics (connections, slow queries) and ensure pooling settings are sane.
+- If the incident coincided with a deploy/migration, create a follow-up task to harden migration/rollback procedures.
