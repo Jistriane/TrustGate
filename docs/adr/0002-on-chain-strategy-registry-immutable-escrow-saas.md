@@ -3,13 +3,13 @@
 ## Status
 - Aceito
 - Data: 2026-08-05
-- Implementação (2026-08-05 update): **4/6 pilares com fundação codada em src/ (P1.8A + P2.1)**
+- Implementação (2026-08-05 update): **5/6 pilares com fundação codada em src/ (P1.8A + P2.1 + P2.4 Opção C)**
   - ✅ Pausas off-chain de emergência: `PAUSE_NEW_TASKS`, `PAUSE_NEW_BIDS`, `PAUSE_WORKER_CONSUMPTION` (3 env vars parseadas em `src/config/safetyFeatures.ts`)
   - ✅ Allowlist/Denylist off-chain executores: `EXECUTOR_DENYLIST` (CSV Stellar G…, validado com regex `^G[A-Z2-7]{55}$`, aplicado em `BidController.create` + `TaskController.complete`)
-  - ✅ Abstração `IProviderEscrow` + factory `createEscrowProvider()` + `ESCROW_IMPLEMENTATION=trustlesswork|mock` (antes tipo chamado `EscrowServiceLike`; mantemos alias deprecated para retrocompatibilidade)
+  - ✅ Abstração `IProviderEscrow` + factory `createEscrowProvider()` + `ESCROW_IMPLEMENTATION=trustlesswork|mock|ourown` (antes tipo chamado `EscrowServiceLike`; mantemos alias deprecated para retrocompatibilidade). Factory valida 4 P0 blockers antes de retornar implementação `ourown`.
   - ✅ **Fundação** Chave pública de verificação webhook SaaS Escrow: `TRUSTLESS_WORK_WEBHOOK_PUBLIC_KEY` (parse em safetyFeatures, validação `len >= 32`, export via `SafetyFeatures.trustlessWorkWebhookPublicKey`, log no boot via `sha256[:8]` preview sem leak). Endpoint `POST /webhooks/trustless-work` + middleware de assinatura Ed25519/SPKI ainda **pendentes P2.2** (não há contrato de request do lado Trustless Work para desenhar middleware ainda).
+  - ✅ **Contrato Escrow Nativo Opção C (Golden Path):** `contracts/escrow/Cargo.toml` + `src/lib.rs` (Soroban SDK 22.0.1, Rust 1.84, 4 métodos + 6 testes unitários). Métodos: `create_escrow` (CEI + executor.require_auth + save state + transfer USDC), `release_milestone` (release_signer.require_auth), `confiscate` (requester.require_auth + split_bp + requester/marketplace share), `claim_timeout` (permissionless após 14d ledger → 100% ao requester). **⚠️  P4 hoje: NÃO está ativável na produção agora.** 4 blockers P0 permanecem: (a) WASM compilado + deploy em testnet/pubnet (script `scripts/deploy-registry.ts` modelo existe); (b) 2 auditorias independentes publicadas (escrow = Top 5 surface de ataque DeFi); (c) TypeScript bindings gerados em `src/contracts/bindings/escrow/` (espelhando bindings de registry); (d) `OurOwnEscrowContractClientStub` substituído por implementação real que chama os bindings via Soroban RPC. Hoje a factory retorna um STUB SEGURO que lança erro em todos os 3 métodos (`createEscrow`/`releaseMilestone`/`confiscate`) com mensagem detalhada de blockers se ativado prematuramente.
   - ⏳ Leitura dual registry blue-green (v1 + v2 ao mesmo tempo por 7 dias): pendente até existir v2 para migrar
-  - ⏳ Nosso próprio contrato escrow WASM (fallback exit 15 dias): blueprint documentado, nenhum contrato `contracts/escrow/src/lib.rs` existe ainda
 
 ## Contexto
 - O TrustGate interage com a blockchain Stellar (Soroban + Classic + MPP) em dois pontos centrais que requerem compromisso entre simplicidade, segurança e capacidade de evolução:

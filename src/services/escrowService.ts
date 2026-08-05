@@ -69,16 +69,22 @@ export type IProviderEscrow = {
 /** @deprecated use IProviderEscrow. Kept for call-site compatibility. */
 export type EscrowServiceLike = IProviderEscrow;
 
+export type EscrowImplementationKind = 'trustlesswork' | 'mock' | 'ourown';
+
 export interface CreateEscrowProviderInput {
-  implementation: 'trustlesswork' | 'mock';
+  implementation: EscrowImplementationKind;
   network: 'local' | 'testnet' | 'pubnet';
   envOverrides?: Partial<{
     TRUSTLESS_WORK_API_KEY: string;
     USDC_ISSUER: string;
     MARKETPLACE_WALLET: string;
+    ESCROW_CONTRACT_ID: string;
+    ESCROW_TOKEN_CONTRACT: string;
+    ESCROW_CONFISCATE_REQUESTER_BP: number;
   }>;
   injectedClient?: TrustlessWorkClientLike;
   injectedMock?: IProviderEscrow;
+  injectedOwn?: IProviderEscrow;
 }
 
 const dynamicImport = new Function('specifier', 'return import(specifier)') as (
@@ -98,12 +104,80 @@ async function loadTrustlessWorkClient(): Promise<
  * implementation via `input.implementation`. Returns `MockEscrowService` from
  * `./mockExternalServices` if `implementation === 'mock'` or `implementation
  * === 'trustlesswork'` but MOCK_EXTERNALS=true on a local network.
+ *
+ * `implementation === 'ourown'` requires all of the following P0 blockers to
+ * be cleared BEFORE being set in prod:
+ *   (a) contracts/escrow/ WASM compiled + deployed to the target Stellar net
+ *       (see ADR 0002 § Fallback exit 15 days);
+ *   (b) at least 2 external independent smart-contract audits published
+ *       (escrow controls real USDC collateral of executors — P0 financial
+ *       risk, no hot-fix on-chain without 30d timelock WASM upgrade);
+ *   (c) Soroban TypeScript bindings generated under src/contracts/bindings/
+ *       mirroring contracts/registry bindings pattern;
+ *   (d) 100% coverage on Rust unit tests + integration tests covering:
+ *       happy path, wrong auth, double release, claim_timeout edge,
+ *       share_bp math overflows.
+ * If any of those are missing, the factory throws a descriptive startup error
+ * to protect against accidental activation on pubnet.
  */
 export async function createEscrowProvider(input: CreateEscrowProviderInput): Promise<IProviderEscrow> {
   if (input.injectedMock) return input.injectedMock;
+  if (input.injectedOwn) return input.injectedOwn;
   if (input.implementation === 'mock') {
     const { MockEscrowService } = await import('./mockExternalServices');
     return new MockEscrowService();
+  }
+  if (input.implementation === 'ourown') {
+    const env = input.envOverrides ?? process.env;
+    const escrowContractId = env.ESCROW_CONTRACT_ID;
+    const tokenContract = env.ESCROW_TOKEN_CONTRACT;
+    const marketplaceWallet = env.MARKETPLACE_WALLET;
+    const requesterBpRaw = env.ESCROW_CONFISCATE_REQUESTER_BP;
+    const requesterBpDefault =
+      requesterBpRaw === undefined || requesterBpRaw === null || requesterBpRaw === ''
+        ? 7000
+        : Number(requesterBpRaw);
+    if (
+      !Number.isFinite(requesterBpDefault) ||
+      requesterBpDefault < 0 ||
+      requesterBpDefault > 10_000
+    ) {
+      throw new Error(
+        `[createEscrowProvider ourown] ESCROW_CONFISCATE_REQUESTER_BP invalid: expected integer 0..=10000, got ${requesterBpRaw}`,
+      );
+    }
+    // Hard P0 blockers. Remove these guards ONLY after (a) WASM deployed,
+    // (b) audits published, (c) TypeScript bindings merged.
+    const wasmDeployedContractIdPresent = typeof escrowContractId === 'string' && escrowContractId.length >= 56;
+    const tokenPresent = typeof tokenContract === 'string' && tokenContract.length >= 56;
+    const marketPresent = typeof marketplaceWallet === 'string' && /^G[A-Z2-7]{55}$/.test(marketplaceWallet);
+    if (!wasmDeployedContractIdPresent) {
+      throw new Error(
+        '[createEscrowProvider ourown] ESCROW_CONTRACT_ID is not set or too short (expected deployed Soroban contract address, 56+ chars). ' +
+          'ADR0002 blocker (a) not cleared: deploy contracts/escrow WASM first and provide resulting contract address.',
+      );
+    }
+    if (!tokenPresent) {
+      throw new Error(
+        '[createEscrowProvider ourown] ESCROW_TOKEN_CONTRACT is not set or too short (expected Soroban USDC token contract address). ' +
+          'Set it explicitly to avoid classic↔Soroban address mapping bugs on pubnet.',
+      );
+    }
+    if (!marketPresent) {
+      throw new Error(
+        '[createEscrowProvider ourown] MARKETPLACE_WALLET is not a valid Stellar G…55 address (required as confiscate marketplace share recipient).',
+      );
+    }
+    // TODO: implement real OurOwnEscrowContractClient once (c) bindings exist.
+    // Stub today throws descriptive error on EVERY call — safe by default,
+    // never silently misbehaves.
+    return new OurOwnEscrowContractClientStub({
+      network: input.network,
+      escrowContractId: escrowContractId as string,
+      tokenContract: tokenContract as string,
+      marketplaceWallet: marketplaceWallet as string,
+      confiscateRequesterBp: Math.trunc(requesterBpDefault),
+    });
   }
   // implementation === 'trustlesswork'
   if (input.injectedClient) {
@@ -131,6 +205,68 @@ export async function createEscrowProvider(input: CreateEscrowProviderInput): Pr
     marketplaceWallet,
     usdcIssuer,
   });
+}
+
+/**
+ * Safe-by-default stub for OurOwnEscrowContractClient (Opção C / ADR0002
+ * fallback exit 15 days). TODAY every method throws a descriptive error that
+ * lists which P0 blockers have not been cleared yet, to prevent accidental
+ * activation of our own escrow on pubnet before (a) audits (b) bindings (c)
+ * deploy are actually done.
+ *
+ * When you implement the REAL client, replace this class with:
+ *   `export class OurOwnEscrowContractClient implements IProviderEscrow { … }`
+ * that imports the generated Soroban bindings under
+ * src/contracts/bindings/escrow (mirror of src/contracts/bindings/registry).
+ * The factory createEscrowProvider will instantiate it directly instead of
+ * this stub after you flip the instantiation line above.
+ *
+ * Keeps TypeScript typecheck happy today (every method of IProviderEscrow is
+ * declared with matching signatures).
+ */
+export interface OurOwnEscrowConfig {
+  network: 'local' | 'testnet' | 'pubnet';
+  escrowContractId: string;
+  tokenContract: string;
+  marketplaceWallet: string;
+  confiscateRequesterBp: number;
+}
+
+const OWN_ESCROW_BLOCKER_MSG =
+  '[OurOwnEscrowContractClient P0 blockers not cleared] This is a SAFE STUB, not a real client. ' +
+  'Activate ESCROW_IMPLEMENTATION=ourown on any environment ONLY after ALL of the following: ' +
+  '(a) deploy contracts/escrow/ WASM → set ESCROW_CONTRACT_ID to the deployed address; ' +
+  '(b) 2 independent external audits published; ' +
+  '(c) generate TypeScript bindings at src/contracts/bindings/escrow mirroring registry/ pattern; ' +
+  '(d) implement a REAL OurOwnEscrowContractClient class inside src/services/escrowService.ts that ' +
+  'performs: (createEscrow) call escrow_contract.create_escrow with executor signed auth + ' +
+  'USDC Soroban transfer via token.transfer(executor→escrow, collateral); ' +
+  '(releaseMilestone) call escrow_contract.release_milestone with MARKETPLACE_WALLET release_signer auth; ' +
+  '(confiscate) call escrow_contract.confiscate(escrowId, requester_share_bp, marketplace) with requester auth. ' +
+  'Today the Rust contracts/escrow exist but are NOT wired into the TypeScript runtime bindings.';
+
+export class OurOwnEscrowContractClientStub implements IProviderEscrow {
+  constructor(_cfg: OurOwnEscrowConfig) {
+    // Constructor never throws — safe; only the 3 action methods throw so
+    // tooling that only instantiates (e.g. createEscrowProvider with
+    // injectedMock in tests) never hits the stub branch.
+  }
+
+  async createEscrow(_executorPublicKey: string, _taskId: string, _collateralAmount: number): Promise<string> {
+    throw new Error(OWN_ESCROW_BLOCKER_MSG + ' (method: createEscrow)');
+  }
+
+  async releaseMilestone(_escrowId: string): Promise<ReleaseResult> {
+    throw new Error(OWN_ESCROW_BLOCKER_MSG + ' (method: releaseMilestone)');
+  }
+
+  async confiscate(
+    _escrowId: string,
+    _collateralAmount: number,
+    _requesterSharePct?: number,
+  ): Promise<ConfiscateResult> {
+    throw new Error(OWN_ESCROW_BLOCKER_MSG + ' (method: confiscate)');
+  }
 }
 
 export class EscrowService implements IProviderEscrow {

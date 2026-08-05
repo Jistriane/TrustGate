@@ -8,3 +8,4 @@ dist
 target/
 Cargo.lock
 !contracts/*/Cargo.lock
+test_snapshots/

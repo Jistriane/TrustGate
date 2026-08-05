@@ -3,7 +3,7 @@ export interface SafetyFeatures {
   pauseNewBids: boolean;
   pauseWorkerConsumption: boolean;
   executorDenylist: Set<string>;
-  escrowImplementation: 'trustlesswork' | 'mock';
+  escrowImplementation: 'trustlesswork' | 'mock' | 'ourown';
   trustlessWorkWebhookPublicKey?: string;
 }
 
@@ -35,11 +35,11 @@ function parseExecutorDenylist(raw: string | undefined): Set<string> {
 
 function parseEscrowImplementation(raw: string | undefined): SafetyFeatures['escrowImplementation'] {
   const lower = (raw ?? 'trustlesswork').trim().toLowerCase();
-  if (lower === 'trustlesswork' || lower === 'mock') {
+  if (lower === 'trustlesswork' || lower === 'mock' || lower === 'ourown') {
     return lower;
   }
   throw new Error(
-    `[safetyFeatures] Invalid ESCROW_IMPLEMENTATION: expected "trustlesswork" or "mock", got "${raw}"`,
+    `[safetyFeatures] Invalid ESCROW_IMPLEMENTATION: expected "trustlesswork", "mock" or "ourown", got "${raw}"`,
   );
 }
 
