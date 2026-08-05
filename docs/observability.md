@@ -447,3 +447,44 @@ This system intentionally depends on external services for certain flows. When t
 
 - Add explicit timeouts and circuit breakers for external calls if needed.
 - Ensure webhook consumers are idempotent and durable (at-least-once delivery is expected).
+
+#### P1: Performance degradation (slow ticks / growing retries)
+
+**Detection**
+
+- Tick p95 latency increases:
+  - `histogram_quantile(0.95, sum(rate(tg_worker_tick_latency_ms_bucket[5m])) by (le))`
+- Due retries stay > 0 and grow:
+  - `max(tg_worker_due_retries) by (handler)`
+- Outbox publish failures increase or success rate drops:
+  - `sum(rate(tg_outbox_publish_events_total{result="failed"}[5m]))`
+
+**Likely causes**
+
+- Redis latency (affects auth, outbox publish, streams consumption).
+- Postgres latency (repositories, outbox, idempotency bookkeeping).
+- Slow external calls (webhook, Trustless Work) blocking tick completion.
+- Too aggressive `publishIntervalMs` relative to actual tick duration (backpressure).
+
+**Mitigation (safe order)**
+
+1) Reduce pressure:
+   - Increase `publishIntervalMs` temporarily to avoid piling up work.
+   - Ensure only one worker instance is running (if intended).
+2) Isolate slow external dependencies:
+   - If only `result_published` is failing/slow, disable webhook temporarily via `RESULT_PUBLISHED_WEBHOOK_URL`.
+   - For Trustless Work delays, keep retries but ensure timeouts are bounded.
+3) Stabilize infra:
+   - Verify Redis and Postgres resource saturation (CPU/memory/IO).
+   - Fix network/DNS issues affecting external calls.
+
+**Validation**
+
+- Tick p95 latency returns toward baseline.
+- Due retries trend down to 0.
+- Dispatch failures rate decreases.
+
+**Aftercare**
+
+- Add explicit timeouts for external calls and consider circuit breakers.
+- Re-evaluate `publishIntervalMs` after measuring real tick duration distribution.
