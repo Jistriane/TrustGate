@@ -167,6 +167,11 @@ export function createApp(overrides: AppOverrides = {}): Express {
   const timeoutService = new TimeoutService(taskRepository, bidRepository, escrowService, outboxService);
 
   const app = express();
+  const trustProxyHopsRaw = Number(process.env.TRUST_PROXY_HOPS ?? 0);
+  const trustProxyHops = Number.isFinite(trustProxyHopsRaw) && trustProxyHopsRaw >= 0 ? Math.trunc(trustProxyHopsRaw) : 0;
+  if (trustProxyHops > 0) {
+    app.set('trust proxy', trustProxyHops);
+  }
   app.use(helmet());
   app.use(cors());
   if (process.env.NODE_ENV !== 'test') {

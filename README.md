@@ -289,6 +289,7 @@ a ready-made testnet config lives in [.env.testnet](file:///home/jistriane/Trust
 |----------|----------|---------|-------------|
 | **Network & runtime** | | | |
 | `NETWORK` | | `local` | `local` (standalone Quickstart), `testnet`, or `pubnet`. |
+| `TRUST_PROXY_HOPS` | | `0` | Number of trusted L7 proxies (CDN / load balancer / ingress nginx) directly in front of the app. `0` (default) = no proxy, trust only direct peer IP. Ex: `1` for Cloudflare alone, `2` for Cloudflare + Nginx. **Must be ≥ 1 in any production behind a proxy**, otherwise the signature-auth IP rate-limiter (10 failed sigs/min per public-key, 30/min per IP) can be bypassed by spoofing `X-Forwarded-For`; the structured request logger's `remoteAddress` will also be wrong. |
 | `MOCK_EXTERNALS` | | `false` | Set `true` in local/dev to stub Trustless Work, x402, and webhooks so the full lifecycle works without real credentials. |
 | `TG_ALLOW_CLIENT_NONCE` | | `false` | **Danger** — allows clients to self-generate nonces. Use only as a P0 workaround when Redis is unhealthy; see runbook. |
 | `NODE_ENV` | | — | `development`, `test`, or `production` (affects pino level, error response detail). |
@@ -398,6 +399,20 @@ a canonical payload and sending it in request headers.
 This project recommends server-issued one-time nonces via `POST /auth/nonce`
 and signing via Stellar Wallets Kit. The full sequence diagram is in
 [Signed request flow](#signed-request-flow-on-testnetpubnet).
+
+**Canonical body-hashing guarantee (P1.2):** the built-in `express.json()`
+middleware preserves the exact raw bytes received on the wire via its
+`verify` callback (see `src/app.ts`) and stores them in `(req as any).rawBody`
+**before** `JSON.parse` runs. `signatureAuth.ts` computes the SHA-256 body
+hash from that raw Buffer first, only falling back to `JSON.stringify(req.body)`
+when no raw buffer exists (e.g. custom body parsers — a setup that should be
+avoided on routes requiring signed requests). On the client side, this means
+**you MUST send the exact same bytes you signed** — if you call
+`JSON.stringify(body)` locally, use it for both the signature payload AND the
+HTTP request body verbatim (same whitespace, same field ordering, no `replacer`
+that differs between signature and request submission). Clients using
+`@stellar/stellar-sdk` via the canonical signing helper in
+`scripts/validate-signed-requests.ts` do this correctly out of the box.
 
 ### Install (React/Next.js)
 
@@ -743,8 +758,9 @@ it in your PR description.
 | ID | Title | Status |
 |----|-------|--------|
 | 0001 | [Outbox + Worker idempotente (Redis Streams) e conclusão assíncrona com Trustless Work](file:///home/jistriane/TrustGate/TrustGate/docs/adr/0001-outbox-worker-idempotency.md) | ✅ Accepted 2026-08-04 |
+| 0002 | [Estratégia on-chain: Registry Soroban Immutable + Escrow via SaaS Trustless Work](file:///home/jistriane/TrustGate/TrustGate/docs/adr/0002-on-chain-strategy-registry-immutable-escrow-saas.md) | ✅ Accepted 2026-08-05 |
 
-To add a new ADR, copy `0001-*.md` as `0002-*.md`, fill in the
+To add a new ADR, copy `0001-*.md` as `0003-*.md`, fill in the
 `Contexto / Decisão / Consequências / Alternativas consideradas` sections,
 and reference it from this table.
 
