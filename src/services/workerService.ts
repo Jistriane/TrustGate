@@ -21,6 +21,7 @@ export interface WorkerServiceOptions {
 
 export class WorkerService {
   private timer?: NodeJS.Timeout;
+  private running = false;
 
   constructor(
     private readonly outbox: PgOutboxRepository,
@@ -254,9 +255,21 @@ export class WorkerService {
       }
     };
 
-    await tick();
+    const runTick = async () => {
+      if (this.running) return;
+      this.running = true;
+      try {
+        await tick();
+      } catch (err) {
+        console.error('[Worker] tick failed:', err);
+      } finally {
+        this.running = false;
+      }
+    };
+
+    await runTick();
     this.timer = setInterval(() => {
-      tick().catch((err) => console.error('[Worker] tick failed:', err));
+      void runTick();
     }, this.options.publishIntervalMs);
   }
 
