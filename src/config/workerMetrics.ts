@@ -23,6 +23,32 @@ export const tgOutboxPublishEventsTotal = new Counter({
   registers: [metricsRegistry],
 });
 
+export const tgOutboxUnprocessed = new Gauge({
+  name: 'tg_outbox_unprocessed',
+  help: 'Number of outbox events that are not processed yet',
+  registers: [metricsRegistry],
+});
+
+export const tgOutboxFailed = new Gauge({
+  name: 'tg_outbox_failed',
+  help: 'Number of outbox events that have failures recorded (attempts > 0)',
+  registers: [metricsRegistry],
+});
+
+export const tgStreamLength = new Gauge({
+  name: 'tg_stream_length',
+  help: 'Redis Stream length (XLEN) by stream and group',
+  labelNames: ['stream', 'group'] as const,
+  registers: [metricsRegistry],
+});
+
+export const tgStreamPending = new Gauge({
+  name: 'tg_stream_pending',
+  help: 'Redis Stream pending messages (XPENDING summary count) by stream and group',
+  labelNames: ['stream', 'group'] as const,
+  registers: [metricsRegistry],
+});
+
 export const tgWorkerAutoClaimEntriesTotal = new Counter({
   name: 'tg_worker_autoclaim_entries_total',
   help: 'Total number of stream entries processed via XAUTOCLAIM',
@@ -48,4 +74,3 @@ export const tgWorkerDueRetries = new Gauge({
   labelNames: ['handler'] as const,
   registers: [metricsRegistry],
 });
-

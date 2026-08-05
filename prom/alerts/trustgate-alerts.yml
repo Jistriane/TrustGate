@@ -129,3 +129,47 @@ groups:
           summary: "TrustGate due retries high (critical)"
           description: "Due retries exceed 10 for a handler for 10m. Delivery is heavily degraded."
 
+      - alert: TrustGateStreamPendingBacklogWarning
+        expr: max(tg_stream_pending) by (stream, group) > 100
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "TrustGate stream pending backlog (warning)"
+          description: "XPENDING backlog is above 100 for 10m. Worker may be falling behind."
+
+      - alert: TrustGateStreamPendingBacklogCritical
+        expr: max(tg_stream_pending) by (stream, group) > 1000
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "TrustGate stream pending backlog (critical)"
+          description: "XPENDING backlog is above 1000 for 5m. Delivery is heavily degraded."
+
+      - alert: TrustGateOutboxUnprocessedBacklogWarning
+        expr: tg_outbox_unprocessed > 100
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "TrustGate outbox unprocessed backlog (warning)"
+          description: "Outbox unprocessed events are above 100 for 10m. Publisher or DB may be degraded."
+
+      - alert: TrustGateOutboxUnprocessedBacklogCritical
+        expr: tg_outbox_unprocessed > 1000
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "TrustGate outbox unprocessed backlog (critical)"
+          description: "Outbox unprocessed events are above 1000 for 5m. Event publication is likely disrupted."
+
+      - alert: TrustGateOutboxFailedPresentWarning
+        expr: tg_outbox_failed > 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "TrustGate outbox failures present (warning)"
+          description: "There are outbox events with failures (attempts > 0) for 30m. Investigate persistent downstream errors."

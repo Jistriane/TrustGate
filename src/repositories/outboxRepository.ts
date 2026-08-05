@@ -61,6 +61,29 @@ export class PgOutboxRepository {
     }));
   }
 
+  async countUnprocessed(): Promise<number> {
+    const res = await this.pool.query<{ count: string }>(
+      `
+        select count(*)::text as count
+        from outbox_events
+        where processed_at is null
+      `,
+    );
+    return Number(res.rows[0]?.count ?? 0);
+  }
+
+  async countFailed(): Promise<number> {
+    const res = await this.pool.query<{ count: string }>(
+      `
+        select count(*)::text as count
+        from outbox_events
+        where processed_at is null
+          and attempts > 0
+      `,
+    );
+    return Number(res.rows[0]?.count ?? 0);
+  }
+
   async findById(id: string): Promise<OutboxEvent | undefined> {
     const res = await this.pool.query<OutboxRow>(
       `

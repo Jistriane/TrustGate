@@ -76,10 +76,14 @@ docker compose -f docker-compose.yml -f docker-compose.observability.yml up --bu
 - `tg_worker_tick_total{status}`
 - `tg_worker_tick_latency_ms{status}`
 - `tg_outbox_publish_events_total{result}`
+- `tg_outbox_unprocessed`
+- `tg_outbox_failed`
 - `tg_worker_autoclaim_entries_total`
 - `tg_worker_poll_entries_total`
 - `tg_worker_dispatch_total{type,result}`
 - `tg_worker_due_retries{handler}`
+- `tg_stream_length{stream,group}`
+- `tg_stream_pending{stream,group}`
 
 **Alerts / symptoms**
 

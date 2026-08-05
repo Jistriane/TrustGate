@@ -10,6 +10,10 @@ import { OutboxService } from './outboxService';
 import { WebhookService } from './webhookService';
 import { toTaskDto } from '../presenters/taskPresenter';
 import {
+  tgOutboxFailed,
+  tgOutboxUnprocessed,
+  tgStreamLength,
+  tgStreamPending,
   tgWorkerAutoClaimEntriesTotal,
   tgWorkerDispatchTotal,
   tgWorkerDueRetries,
@@ -30,6 +34,7 @@ export interface WorkerServiceOptions {
 export class WorkerService {
   private timer?: NodeJS.Timeout;
   private running = false;
+  private lastBacklogSampleAt = 0;
 
   constructor(
     private readonly outbox: PgOutboxRepository,
@@ -134,7 +139,44 @@ export class WorkerService {
     });
     await consumer.ensureGroup();
 
+    const maybeSampleBacklog = async () => {
+      const now = Date.now();
+      const sampleIntervalMs = 5000;
+      if (now - this.lastBacklogSampleAt < sampleIntervalMs) return;
+      this.lastBacklogSampleAt = now;
+
+      const stream = this.options.streamKey;
+      const group = this.options.consumerGroup;
+
+      try {
+        const lenRes = await this.redis.sendCommand(['XLEN', stream]);
+        const length = Number(lenRes ?? 0);
+        if (Number.isFinite(length)) {
+          tgStreamLength.set({ stream, group }, length);
+        }
+
+        const pendingRes = await this.redis.sendCommand(['XPENDING', stream, group]);
+        const pendingCountRaw = Array.isArray(pendingRes) ? pendingRes[0] : undefined;
+        const pending = Number(pendingCountRaw ?? 0);
+        if (Number.isFinite(pending)) {
+          tgStreamPending.set({ stream, group }, pending);
+        }
+      } catch (err) {
+        void err;
+      }
+
+      try {
+        const unprocessed = await this.outbox.countUnprocessed();
+        tgOutboxUnprocessed.set(Number.isFinite(unprocessed) ? unprocessed : 0);
+        const failed = await this.outbox.countFailed();
+        tgOutboxFailed.set(Number.isFinite(failed) ? failed : 0);
+      } catch (err) {
+        void err;
+      }
+    };
+
     const tick = async () => {
+      await maybeSampleBacklog();
       await publisher.publishOnce();
       const claimed = await consumer.autoClaimOnce(30_000, async (entry) => {
         const eventId = String(entry.fields.id ?? '');
