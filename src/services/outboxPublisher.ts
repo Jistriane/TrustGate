@@ -1,5 +1,6 @@
 import { RedisClientType } from 'redis';
 import { PgOutboxRepository } from '../repositories/outboxRepository';
+import { tgOutboxPublishEventsTotal } from '../config/workerMetrics';
 
 export interface OutboxPublisherOptions {
   streamKey: string;
@@ -30,11 +31,12 @@ export class OutboxPublisher {
           { TRIM: { strategy: 'MAXLEN', strategyModifier: '~', threshold: 10000 } },
         );
         await this.outbox.markProcessed(event.id);
+        tgOutboxPublishEventsTotal.inc({ result: 'success' });
       } catch (err) {
         await this.outbox.markFailed(event.id, (err as Error).message);
+        tgOutboxPublishEventsTotal.inc({ result: 'failed' });
       }
     }
     return events.length;
   }
 }
-

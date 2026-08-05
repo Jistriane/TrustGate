@@ -9,6 +9,14 @@ import { EscrowServiceLike } from './escrowService';
 import { OutboxService } from './outboxService';
 import { WebhookService } from './webhookService';
 import { toTaskDto } from '../presenters/taskPresenter';
+import {
+  tgWorkerAutoClaimEntriesTotal,
+  tgWorkerDispatchTotal,
+  tgWorkerDueRetries,
+  tgWorkerPollEntriesTotal,
+  tgWorkerTickLatencyMs,
+  tgWorkerTickTotal,
+} from '../config/workerMetrics';
 
 export interface WorkerServiceOptions {
   streamKey: string;
@@ -128,7 +136,7 @@ export class WorkerService {
 
     const tick = async () => {
       await publisher.publishOnce();
-      await consumer.autoClaimOnce(30_000, async (entry) => {
+      const claimed = await consumer.autoClaimOnce(30_000, async (entry) => {
         const eventId = String(entry.fields.id ?? '');
         const type = String(entry.fields.type ?? '');
         const payloadRaw = entry.fields.payload ?? 'null';
@@ -161,6 +169,7 @@ export class WorkerService {
         try {
           await this.dispatch(eventId, type, payload);
           await this.consumptions.markSucceeded(handlerName, eventId);
+          tgWorkerDispatchTotal.inc({ type, result: 'success' });
         } catch (err) {
           const attempt = started.record?.attempts ?? 1;
           await this.consumptions.markFailed({
@@ -169,11 +178,14 @@ export class WorkerService {
             error: (err as Error).message,
             nextRetryAt: this.computeBackoff(attempt),
           });
+          tgWorkerDispatchTotal.inc({ type, result: 'failed' });
         } finally {
           await consumer.ack(entry.id);
         }
       });
-      await consumer.pollOnce(async (entry) => {
+      tgWorkerAutoClaimEntriesTotal.inc(claimed);
+
+      const polled = await consumer.pollOnce(async (entry) => {
         const eventId = String(entry.fields.id ?? '');
         const type = String(entry.fields.type ?? '');
         const payloadRaw = entry.fields.payload ?? 'null';
@@ -206,6 +218,7 @@ export class WorkerService {
         try {
           await this.dispatch(eventId, type, payload);
           await this.consumptions.markSucceeded(handlerName, eventId);
+          tgWorkerDispatchTotal.inc({ type, result: 'success' });
         } catch (err) {
           const attempt = started.record?.attempts ?? 1;
           await this.consumptions.markFailed({
@@ -214,13 +227,16 @@ export class WorkerService {
             error: (err as Error).message,
             nextRetryAt: this.computeBackoff(attempt),
           });
+          tgWorkerDispatchTotal.inc({ type, result: 'failed' });
         } finally {
           await consumer.ack(entry.id);
         }
       });
+      tgWorkerPollEntriesTotal.inc(polled);
 
       for (const handlerName of ['event:task_completion_requested', 'event:result_published']) {
         const due = await this.consumptions.listDueRetries({ handlerName, limit: 25 });
+        tgWorkerDueRetries.set({ handler: handlerName }, due.length);
         for (const record of due) {
           const started = await this.consumptions.tryStart({
             handlerName: record.handlerName,
@@ -242,6 +258,7 @@ export class WorkerService {
           try {
             await this.dispatch(event.id, event.type, event.payload);
             await this.consumptions.markSucceeded(record.handlerName, record.eventId);
+            tgWorkerDispatchTotal.inc({ type: event.type, result: 'success' });
           } catch (err) {
             const attempt = started.record?.attempts ?? record.attempts;
             await this.consumptions.markFailed({
@@ -250,6 +267,7 @@ export class WorkerService {
               error: (err as Error).message,
               nextRetryAt: this.computeBackoff(attempt),
             });
+            tgWorkerDispatchTotal.inc({ type: event.type, result: 'failed' });
           }
         }
       }
@@ -258,9 +276,16 @@ export class WorkerService {
     const runTick = async () => {
       if (this.running) return;
       this.running = true;
+      const start = process.hrtime.bigint();
       try {
         await tick();
+        const ms = Number(process.hrtime.bigint() - start) / 1e6;
+        tgWorkerTickTotal.inc({ status: 'success' });
+        tgWorkerTickLatencyMs.observe({ status: 'success' }, ms);
       } catch (err) {
+        const ms = Number(process.hrtime.bigint() - start) / 1e6;
+        tgWorkerTickTotal.inc({ status: 'error' });
+        tgWorkerTickLatencyMs.observe({ status: 'error' }, ms);
         console.error('[Worker] tick failed:', err);
       } finally {
         this.running = false;
