@@ -493,3 +493,74 @@ This system intentionally depends on external services for certain flows. When t
 
 - Add explicit timeouts for external calls and consider circuit breakers.
 - Re-evaluate `publishIntervalMs` after measuring real tick duration distribution.
+
+#### P1: Deploy regression (post-release triage + safe rollback)
+
+**Goal**
+- Detect whether the current incident correlates with the most recent deploy (code/config/env) and drive a safe, incremental rollback guided by metrics — never “guess and revert” when signals exist.
+
+**Detection (regression signals)**
+
+- Incident started within ~10–30 minutes after release window.
+- Clear step change in at least one of:
+  - Auth 5xx ratio / p95 nonce latency:
+    - `sum(rate(tg_auth_nonce_requests_total{status=~"5.."}[2m])) / sum(rate(tg_auth_nonce_requests_total[2m]))`
+    - `histogram_quantile(0.95, sum(rate(tg_auth_nonce_latency_ms_bucket[2m])) by (le))`
+  - Worker tick error ratio or p95 tick latency:
+    - `sum(rate(tg_worker_tick_total{status="error"}[2m])) / sum(rate(tg_worker_tick_total[2m]))`
+    - `histogram_quantile(0.95, sum(rate(tg_worker_tick_latency_ms_bucket[2m])) by (le))`
+  - Outbox / stream backlog growth:
+    - `max(tg_stream_pending{group=~".+"}) by (group)`
+    - `tg_outbox_unprocessed`
+- Same issue does NOT reproduce on the same build in staging (if you have staging).
+- Version metadata or deploy logs confirm the current deploy is the candidate.
+
+**Likely causes**
+
+- Contract change in signed requests (client/server mismatch): nonce/payload/path/hash rules.
+- Middleware/route change breaking auth or idempotency.
+- DB/Redis client change (pool size, timeouts, URLs) degrading stateful paths.
+- Worker change: tick logic, retry policy, or interval leading to overlap or slowdown.
+- Env/config drift: flag toggles, URLs, secrets, network-specific defaults.
+
+**Mitigation (safe order)**
+
+1) Confirm scope first:
+   - Check if the failure is isolated to one component (API vs worker vs auth vs signed routes).
+   - Do NOT roll back the whole system if only one component regressed; prefer targeted rollback (client, API, worker one at a time).
+2) API regression:
+   - Roll back API to the previous known-good image/tag.
+   - In rolling deploy, keep at least one old replica until new version is proven healthy.
+   - After rollback, do NOT restart the worker blindly (it may still be healthy); let metrics decide.
+3) Worker regression:
+   - Roll back worker to the previous known-good image/tag.
+   - Do NOT clear `event_consumptions` or `outbox_events` on rollback (that risks replay/double-spend on-chain).
+   - If worker was restarted forcefully, wait for `XAUTOCLAIM` (and pending backlog) to drain via metrics.
+4) Auth/client regression:
+   - Roll back the client dApp (preferred) when the regression is in the signing flow.
+   - NEVER weaken nonce rules as a workaround; if absolutely required (P0-only, short-lived), flip `TG_ALLOW_CLIENT_NONCE=true` temporarily and open an incident to revert.
+
+**Validation (acceptance gates)**
+
+- Within 2–5 minutes after rollback:
+  - `GET /health` and `GET /health/detailed` are green.
+  - `tg_auth_nonce_requests_total{status="200"}` returns to baseline rate; 5xx ratio drops.
+  - `tg_worker_tick_total{status="success"}` resumes increasing; error ratio drops.
+  - `tg_stream_pending` and `tg_outbox_unprocessed` stop growing and start trending down.
+- Within 15–30 minutes:
+  - `tg_worker_due_retries` drops to near-zero.
+  - Dashboard anomalies (regression markers) are cleared.
+- Manual smoke (only if needed):
+  - `/auth/nonce` → `/auth/signed-smoke` succeeds end-to-end.
+
+**Aftercare**
+
+- Post-mortem:
+  - Capture the deploy + rollback timeline, the triggering metric(s), and root cause hypothesis.
+  - Open regression test ticket(s) to prevent the same pattern.
+- Regressions by env/config drift:
+  - Move secrets/URLs to versioned IaC or env per environment and add startup validations.
+- Regressions by signed-request contract:
+  - Add a contract test (client/server) against `/auth/nonce` + a smoke route.
+- Regressions by worker interval/backpressure:
+  - Automate a “deploy time sanity” check that tick duration < `publishIntervalMs`.
