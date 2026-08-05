@@ -1,0 +1,131 @@
+groups:
+  - name: trustgate-auth
+    rules:
+      - alert: TrustGateAuthNonce5xxErrorRatioWarning
+        expr: (sum(rate(tg_auth_nonce_requests_total{status=~"5.."}[5m])) / sum(rate(tg_auth_nonce_requests_total[5m]))) > 0.005
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "TrustGate /auth/nonce elevated 5xx ratio (warning)"
+          description: "5xx ratio on /auth/nonce is above 0.5% for 5m. Check Redis availability/latency."
+
+      - alert: TrustGateAuthNonce5xxErrorRatioCritical
+        expr: (sum(rate(tg_auth_nonce_requests_total{status=~"5.."}[5m])) / sum(rate(tg_auth_nonce_requests_total[5m]))) > 0.02
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "TrustGate /auth/nonce elevated 5xx ratio (critical)"
+          description: "5xx ratio on /auth/nonce is above 2% for 5m. Signed requests may be failing."
+
+      - alert: TrustGateAuthNonceLatencyP95Warning
+        expr: histogram_quantile(0.95, sum(rate(tg_auth_nonce_latency_ms_bucket[5m])) by (le)) > 500
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "TrustGate /auth/nonce p95 latency high (warning)"
+          description: "p95 latency for /auth/nonce is above 500ms for 10m. Check Redis and server load."
+
+      - alert: TrustGateAuthNonceLatencyP95Critical
+        expr: histogram_quantile(0.95, sum(rate(tg_auth_nonce_latency_ms_bucket[5m])) by (le)) > 2000
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "TrustGate /auth/nonce p95 latency high (critical)"
+          description: "p95 latency for /auth/nonce is above 2000ms for 5m. Signed requests may be degraded."
+
+      - alert: TrustGateSignedAuthRateLimitSpikeWarning
+        expr: sum(rate(tg_auth_signature_requests_total{status="429"}[5m])) > 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "TrustGate signed auth 429 spike (warning)"
+          description: "429 rate-limits across signed endpoints exceed 1 rps for 10m. Investigate client regressions or abuse."
+
+  - name: trustgate-worker
+    rules:
+      - alert: TrustGateWorkerNoSuccessfulTicksCritical
+        expr: increase(tg_worker_tick_total{status="success"}[2m]) == bool 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "TrustGate worker has no successful ticks"
+          description: "No successful worker ticks in the last 2 minutes. Worker may be down or stuck."
+
+      - alert: TrustGateWorkerTickErrorRatioWarning
+        expr: (sum(rate(tg_worker_tick_total{status="error"}[5m])) / sum(rate(tg_worker_tick_total[5m]))) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "TrustGate worker tick error ratio high (warning)"
+          description: "Worker tick error ratio is above 5% for 10m. Check Redis/Postgres/Webhook/Trustless Work."
+
+      - alert: TrustGateWorkerTickErrorRatioCritical
+        expr: (sum(rate(tg_worker_tick_total{status="error"}[5m])) / sum(rate(tg_worker_tick_total[5m]))) > 0.2
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "TrustGate worker tick error ratio high (critical)"
+          description: "Worker tick error ratio is above 20% for 5m. Delivery may be disrupted."
+
+      - alert: TrustGateWorkerTickLatencyP95Warning
+        expr: histogram_quantile(0.95, sum(rate(tg_worker_tick_latency_ms_bucket[5m])) by (le)) > 2000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "TrustGate worker tick p95 latency high (warning)"
+          description: "Worker tick p95 latency is above 2000ms for 10m. Investigate slow I/O or external dependencies."
+
+      - alert: TrustGateWorkerTickLatencyP95Critical
+        expr: histogram_quantile(0.95, sum(rate(tg_worker_tick_latency_ms_bucket[5m])) by (le)) > 10000
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "TrustGate worker tick p95 latency high (critical)"
+          description: "Worker tick p95 latency is above 10s for 5m. Worker is likely stuck."
+
+      - alert: TrustGateOutboxPublishFailuresWarning
+        expr: sum(rate(tg_outbox_publish_events_total{result="failed"}[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "TrustGate outbox publish failures (warning)"
+          description: "Outbox publish failures detected for 5m. Investigate Redis availability and stream writes."
+
+      - alert: TrustGateOutboxPublishFailuresCritical
+        expr: sum(rate(tg_outbox_publish_events_total{result="failed"}[5m])) > 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "TrustGate outbox publish failures (critical)"
+          description: "Outbox publish failures exceed 1/s for 5m. Event delivery is likely disrupted."
+
+      - alert: TrustGateDueRetriesWarning
+        expr: max(tg_worker_due_retries) by (handler) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "TrustGate due retries present (warning)"
+          description: "There are due retries for at least one handler for 10m. Investigate persistent failures."
+
+      - alert: TrustGateDueRetriesCritical
+        expr: max(tg_worker_due_retries) by (handler) > 10
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "TrustGate due retries high (critical)"
+          description: "Due retries exceed 10 for a handler for 10m. Delivery is heavily degraded."
+
