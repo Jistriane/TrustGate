@@ -25,6 +25,7 @@ escrow), **MPP**/**x402** (pay-per-result access), and the **Stellar SDK**.
 - [Testnet deployment](#running-against-real-stellar-testnet)
 - [Signed requests (dApp)](#signed-requests-dapp)
 - [API walkthrough](#example-full-lifecycle-via-curl)
+- [Observability](#observability)
 - [Known limitations](#known-limitations)
 
 ## Stack
@@ -365,6 +366,10 @@ curl -X POST localhost:3000/tasks/<id>/complete \
 ```
 
 Every request/response shape is documented interactively at `GET /api-docs`.
+
+## Observability
+
+Runbooks and metric-based troubleshooting live in [observability.md](file:///home/jistriane/TrustGate/TrustGate/docs/observability.md).
 
 ## Known limitations
 
