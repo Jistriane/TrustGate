@@ -89,3 +89,82 @@ This document is a practical runbook for diagnosing issues using Prometheus metr
   - Dispatch failures by `type`
   - Due retries by `handler`
 
+### SLOs & thresholds (v1)
+
+These are initial, conservative thresholds to reduce MTTR and catch regressions early. Adjust once you have real traffic baselines.
+
+#### Auth SLOs (server-side)
+
+**Nonce issuance availability**
+
+- **Goal (SLO)**: `POST /auth/nonce` success rate ≥ 99.9% over 30d.
+- **Signal**:
+  - Success: `tg_auth_nonce_requests_total{status="200"}`
+  - Errors: `tg_auth_nonce_requests_total{status=~"5.."}`
+- **PromQL** (error ratio, 5m window):
+  - `sum(rate(tg_auth_nonce_requests_total{status=~"5.."}[5m])) / sum(rate(tg_auth_nonce_requests_total[5m]))`
+- **Suggested alert**:
+  - Warning: > 0.5% for 5m
+  - Critical: > 2% for 5m
+
+**Nonce latency**
+
+- **Goal (SLO)**: p95 `POST /auth/nonce` latency < 250ms.
+- **PromQL** (p95, 5m window):
+  - `histogram_quantile(0.95, sum(rate(tg_auth_nonce_latency_ms_bucket[5m])) by (le))`
+- **Suggested alert**:
+  - Warning: p95 > 500ms for 10m
+  - Critical: p95 > 2000ms for 5m
+
+**Client error noise (not an SLO, but an anomaly detector)**
+
+- **Spike 401** by route may indicate client rollout issues:
+  - `sum(rate(tg_auth_signature_requests_total{status="401"}[5m])) by (route)`
+- **Spike 429** by route may indicate abuse or misbehaving clients:
+  - `sum(rate(tg_auth_signature_requests_total{status="429"}[5m])) by (route)`
+
+#### Worker SLOs (liveness & delivery)
+
+**Tick liveness**
+
+- **Goal (SLO)**: `tg_worker_tick_total{status="success"}` continues increasing.
+- **PromQL** (no-success-ticks detector, 2m window):
+  - `increase(tg_worker_tick_total{status="success"}[2m]) == 0`
+- **Suggested alert**:
+  - Critical: no successful ticks for 2m
+
+**Tick errors**
+
+- **Goal (SLO)**: tick error ratio < 1% over 30d (best-effort; depends on external dependencies).
+- **PromQL** (error ratio, 5m window):
+  - `sum(rate(tg_worker_tick_total{status="error"}[5m])) / sum(rate(tg_worker_tick_total[5m]))`
+- **Suggested alert**:
+  - Warning: > 5% for 10m
+  - Critical: > 20% for 5m
+
+**Tick latency**
+
+- **Goal (SLO)**: p95 tick duration stays under the configured `publishIntervalMs` budget (if `publishIntervalMs <= 1s`, start with p95 < 2000ms).
+- **PromQL** (p95, 5m window):
+  - `histogram_quantile(0.95, sum(rate(tg_worker_tick_latency_ms_bucket[5m])) by (le, status))`
+- **Suggested alert**:
+  - Warning: p95 > 2000ms for 10m
+  - Critical: p95 > 10000ms for 5m
+
+**Outbox publish failures**
+
+- **Goal (SLO)**: publish failures are rare; sustained failures mean Redis issues.
+- **PromQL** (failure rate, 5m):
+  - `sum(rate(tg_outbox_publish_events_total{result="failed"}[5m]))`
+- **Suggested alert**:
+  - Warning: > 0 for 5m
+  - Critical: > 1/s for 5m
+
+**Due retries**
+
+- **Goal (SLO)**: `tg_worker_due_retries{handler}` stays at 0 most of the time.
+- **PromQL**:
+  - `max(tg_worker_due_retries) by (handler)`
+- **Suggested alert**:
+  - Warning: > 0 for 10m
+  - Critical: > 10 for 10m
