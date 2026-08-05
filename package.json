@@ -8,6 +8,7 @@
     "start": "node dist/server.js",
     "start:dev": "ts-node-dev --respawn --transpile-only src/server.ts",
     "db:migrate": "ts-node --transpile-only scripts/db-migrate.ts",
+    "validate:signed": "NETWORK=testnet REDIS_URL=redis://127.0.0.1:6379 ts-node --transpile-only scripts/validate-signed-requests.ts",
     "webhook:receiver": "ts-node --transpile-only scripts/webhook-receiver.ts",
     "test": "jest",
     "test:e2e": "jest --config jest.config.js --testPathPattern src/e2e",
