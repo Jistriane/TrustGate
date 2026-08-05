@@ -2,6 +2,17 @@ import { Keypair } from '@stellar/stellar-sdk';
 import { Task } from '../models/task';
 import { TaskFeedService } from './taskFeedService';
 import { FeedListenerService } from './feedListenerService';
+import { logger } from '../config/logger';
+
+jest.mock('../config/logger', () => ({
+  logger: {
+    info: jest.fn(),
+    warn: jest.fn(),
+    error: jest.fn(),
+    fatal: jest.fn(),
+    debug: jest.fn(),
+  },
+}));
 
 function makeTask(overrides: Partial<Task> = {}): Task {
   return {
@@ -16,33 +27,32 @@ function makeTask(overrides: Partial<Task> = {}): Task {
 }
 
 describe('FeedListenerService', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
   it('logs a message when the channel publishes a new tick', async () => {
-    const logSpy = jest.spyOn(console, 'log').mockImplementation();
     const feedService = new TaskFeedService(Keypair.random());
     new FeedListenerService(feedService);
 
     await feedService.publishTask(makeTask({ id: 'task-42' }));
 
-    expect(logSpy).toHaveBeenCalledWith(
-      expect.stringMatching(/\[Feed Listener\] received tick #1.*task-42/),
+    expect(logger.info).toHaveBeenCalledWith(
+      { sequence: 1, taskId: 'task-42' },
+      expect.stringMatching(/\[Feed Listener\] received tick — new task available/),
     );
-
-    logSpy.mockRestore();
   });
 
   it('stops receiving ticks after stop() is called', async () => {
-    const logSpy = jest.spyOn(console, 'log').mockImplementation();
     const feedService = new TaskFeedService(Keypair.random());
     const listener = new FeedListenerService(feedService);
 
     listener.stop();
     await feedService.publishTask(makeTask());
 
-    const listenerLogs = logSpy.mock.calls.filter((call: unknown[]) =>
-      String(call[0]).includes('[Feed Listener]'),
+    const listenerCalls = (logger.info as jest.Mock).mock.calls.filter(
+      (call: unknown[]) => String(call[1] ?? '').includes('[Feed Listener]'),
     );
-    expect(listenerLogs).toHaveLength(0);
-
-    logSpy.mockRestore();
+    expect(listenerCalls).toHaveLength(0);
   });
 });

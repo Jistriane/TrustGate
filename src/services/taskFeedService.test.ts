@@ -1,6 +1,17 @@
 import { Keypair } from '@stellar/stellar-sdk';
 import { Task } from '../models/task';
 import { TaskFeedService } from './taskFeedService';
+import { logger } from '../config/logger';
+
+jest.mock('../config/logger', () => ({
+  logger: {
+    info: jest.fn(),
+    warn: jest.fn(),
+    error: jest.fn(),
+    fatal: jest.fn(),
+    debug: jest.fn(),
+  },
+}));
 
 function makeTask(overrides: Partial<Task> = {}): Task {
   return {
@@ -15,8 +26,11 @@ function makeTask(overrides: Partial<Task> = {}): Task {
 }
 
 describe('TaskFeedService', () => {
-  it('publishes a tick with an increasing sequence number, logged to console', async () => {
-    const logSpy = jest.spyOn(console, 'log').mockImplementation();
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('publishes a tick with an increasing sequence number, logged via structured logger', async () => {
     const signingKey = Keypair.random();
     const service = new TaskFeedService(signingKey);
 
@@ -31,14 +45,17 @@ describe('TaskFeedService', () => {
     expect(tickA.taskId).toBe('task-a');
     expect(tickB.taskId).toBe('task-b');
 
-    expect(logSpy).toHaveBeenCalledWith(expect.stringMatching(/\[Task Feed\] tick #1/));
-    expect(logSpy).toHaveBeenCalledWith(expect.stringMatching(/\[Task Feed\] tick #2/));
-
-    logSpy.mockRestore();
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({ sequence: 1, taskId: 'task-a', signingPublicKey: signingKey.publicKey() }),
+      expect.stringMatching(/\[Task Feed\] tick — task published/),
+    );
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({ sequence: 2, taskId: 'task-b', signingPublicKey: signingKey.publicKey() }),
+      expect.stringMatching(/\[Task Feed\] tick — task published/),
+    );
   });
 
   it('signs each tick with the signing key', async () => {
-    jest.spyOn(console, 'log').mockImplementation();
     const signingKey = Keypair.random();
     const service = new TaskFeedService(signingKey);
 
@@ -48,7 +65,5 @@ describe('TaskFeedService', () => {
     const payload = `${tick.sequence}:${tick.taskId}:${tick.timestamp}`;
     const isValid = signingKey.verify(Buffer.from(payload), Buffer.from(tick.signature, 'hex'));
     expect(isValid).toBe(true);
-
-    jest.restoreAllMocks();
   });
 });

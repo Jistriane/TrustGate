@@ -5,6 +5,16 @@ import { BidRepository } from '../repositories/bidRepository';
 import { EscrowService } from './escrowService';
 import { TimeoutService } from './timeoutService';
 
+jest.mock('../config/logger', () => ({
+  logger: {
+    info: jest.fn(),
+    warn: jest.fn(),
+    error: jest.fn(),
+    fatal: jest.fn(),
+    debug: jest.fn(),
+  },
+}));
+
 function makeTask(overrides: Partial<Task> = {}): Task {
   return {
     id: 'task-1',

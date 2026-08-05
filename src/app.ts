@@ -3,6 +3,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import swaggerUi from 'swagger-ui-express';
 import { Keypair } from '@stellar/stellar-sdk';
+import { logger } from './config/logger';
 import { requestLogger } from './middlewares/requestLogger';
 import { metricsRegistry } from './config/metrics';
 import { swaggerSpec } from './config/swagger';
@@ -96,8 +97,9 @@ export function createApp(overrides: AppOverrides = {}): Express {
     feedSigningKey = Keypair.fromSecret(process.env.ADMIN_SECRET);
   } else {
     feedSigningKey = Keypair.random();
-    console.warn(
-      `No ADMIN_SECRET set — generated ephemeral task feed signing key ${feedSigningKey.publicKey()}`,
+    logger.warn(
+      { signingKeyPublicKey: feedSigningKey.publicKey() },
+      'No ADMIN_SECRET set — generated ephemeral task feed signing key',
     );
   }
 
@@ -655,7 +657,7 @@ export function createApp(overrides: AppOverrides = {}): Express {
      */
     app.get('/executor/tasks/:taskId/result', resultPaymentGate, executorResultController.getResult);
   } else {
-    console.warn('OZ_API_KEY is not set — GET /executor/tasks/:taskId/result is not mounted');
+    logger.warn('OZ_API_KEY is not set — GET /executor/tasks/:taskId/result is not mounted');
   }
 
   /**

@@ -20,6 +20,7 @@ import { OutboxService } from './services/outboxService';
 import { WebhookService } from './services/webhookService';
 import { isTransientNetworkError, withRetry } from './utils/retry';
 import { MockEscrowService, shouldMockExternals } from './services/mockExternalServices';
+import { logger } from './config/logger';
 
 async function fundOnFriendbot(horizonUrl: string, publicKey: string): Promise<void> {
   const res = await fetch(`${horizonUrl}/friendbot?addr=${publicKey}`);
@@ -30,37 +31,41 @@ async function fundOnFriendbot(horizonUrl: string, publicKey: string): Promise<v
 
 async function checkStellarConnectivity(): Promise<void> {
   const config = loadStellarConfig();
-  console.log(`Connecting to Stellar (${config.network}) via ${config.horizonUrl}`);
+  logger.info({ network: config.network, horizonUrl: config.horizonUrl }, 'Connecting to Stellar');
 
   const admin = process.env.ADMIN_SECRET
     ? loadKeypairFromEnv('ADMIN_SECRET')
     : generateKeypair();
+  const adminPublicKey = admin.publicKey();
 
   if (config.network === 'local') {
     try {
       const label = process.env.ADMIN_SECRET ? 'ADMIN_SECRET' : 'throwaway admin';
-      console.log(`Funding ${label} ${admin.publicKey()} via friendbot`);
-      await withRetry(() => fundOnFriendbot(config.horizonUrl, admin.publicKey()), {
+      logger.info({ label, publicKey: adminPublicKey }, 'Funding admin via friendbot');
+      await withRetry(() => fundOnFriendbot(config.horizonUrl, adminPublicKey), {
         retries: 8,
         baseDelayMs: 500,
         shouldRetry: (err) => isTransientNetworkError(err) || String(err).includes('Friendbot funding failed: 5'),
       });
     } catch (err) {
-      console.warn(`Friendbot funding skipped: ${(err as Error).message}`);
+      logger.warn(
+        { err, label: process.env.ADMIN_SECRET ? 'ADMIN_SECRET' : 'throwaway admin', publicKey: adminPublicKey },
+        'Friendbot funding skipped',
+      );
     }
   }
 
   const accountService = new AccountService(config);
   try {
-    const xlmBalance = await withRetry(() => accountService.getXlmBalance(admin.publicKey()), {
+    const xlmBalance = await withRetry(() => accountService.getXlmBalance(adminPublicKey), {
       retries: 8,
       baseDelayMs: 500,
       shouldRetry: isTransientNetworkError,
     });
-    console.log(`Admin account: ${admin.publicKey()}`);
-    console.log(`XLM balance: ${xlmBalance}`);
+    logger.info({ publicKey: adminPublicKey }, 'Admin account');
+    logger.info({ publicKey: adminPublicKey, xlmBalance }, 'XLM balance');
   } catch (err) {
-    console.warn(`Skipping XLM balance check: ${(err as Error).message}`);
+    logger.warn({ err, publicKey: adminPublicKey }, 'Skipping XLM balance check');
   }
 }
 
@@ -114,8 +119,20 @@ async function main(): Promise<void> {
         })();
 
     const outboxService = new OutboxService(outbox);
+    const parsedWebhookMaxRetries = Number(process.env.WEBHOOK_MAX_RETRIES);
+    const webhookMaxRetries =
+      Number.isFinite(parsedWebhookMaxRetries) && parsedWebhookMaxRetries >= 0
+        ? Math.trunc(parsedWebhookMaxRetries)
+        : 3;
+    const parsedWebhookBaseBackoffMs = Number(process.env.WEBHOOK_BASE_BACKOFF_MS);
+    const webhookBaseBackoffMs =
+      Number.isFinite(parsedWebhookBaseBackoffMs) && parsedWebhookBaseBackoffMs >= 50
+        ? Math.trunc(parsedWebhookBaseBackoffMs)
+        : 1000;
     const webhookService = new WebhookService({
       timeoutMs: Number(process.env.WEBHOOK_TIMEOUT_MS ?? 5000),
+      maxRetries: webhookMaxRetries,
+      baseBackoffMs: webhookBaseBackoffMs,
     });
     const redis = await getRedisClient();
     const worker = new WorkerService(
@@ -140,11 +157,11 @@ async function main(): Promise<void> {
   }
 
   app.listen(port, () => {
-    console.log(`TrustGate server listening on port ${port}`);
+    logger.info({ port, nodeEnv: process.env.NODE_ENV ?? 'development' }, 'TrustGate server listening');
   });
 }
 
 main().catch((err) => {
-  console.error('Failed to start:', err);
+  logger.fatal({ err }, 'Failed to start');
   process.exit(1);
 });

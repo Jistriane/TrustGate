@@ -23,6 +23,7 @@ import { parseUsdcDecimalToStroops } from '../utils/money';
 import { toTaskDto } from '../presenters/taskPresenter';
 import { toBidDto } from '../presenters/bidPresenter';
 import { OutboxService } from '../services/outboxService';
+import { logger } from '../config/logger';
 
 export class TaskController {
   constructor(
@@ -55,7 +56,7 @@ export class TaskController {
     try {
       await this.taskFeedService.publishTask(task);
     } catch (err) {
-      console.error('Failed to publish task to the feed:', err);
+      logger.error({ err, taskId: task.id }, 'Failed to publish task to the feed');
     }
 
     await this.outbox?.emit({

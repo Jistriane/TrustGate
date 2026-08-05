@@ -321,7 +321,9 @@ a ready-made testnet config lives in [.env.testnet](file:///home/jistriane/Trust
 | `EXECUTOR_WALLET` | | marketplace wallet | Stellar public key that receives x402 result payments. |
 | `EXECUTOR_RESULT_PRICE` | | `$0.05` | Price (USDC) for `GET /executor/tasks/:id/result`. Supports `$0.05` format or raw stroops. |
 | **Webhooks** | | | |
-| `WEBHOOK_TIMEOUT_MS` | | `5000` | Hard timeout for outbound webhook calls. Combined with 3 retries + exponential backoff in the worker. |
+| `WEBHOOK_TIMEOUT_MS` | | `5000` | Hard timeout (AbortController) per HTTP attempt for outbound webhook calls. Inner wrapper retries up to `WEBHOOK_MAX_RETRIES` times and outer worker-level `WORKER_MAX_ATTEMPTS` (default 10) retries further via XAUTOCLAIM. |
+| `WEBHOOK_MAX_RETRIES` | | `3` | Number of retries inside a single worker tick postJson call (>= 0, integer). Default `3` = up to 4 total HTTP attempts per event (1 + 3 retries). Qualifying retryable errors: 5xx, 429, 408, network throw (ECONNRESET/DNS/ETIMEDOUT/AbortError). Non-retryable (fail-fast): 400/401/403/404/410. 429/503 `Retry-After: N` integer header overrides the computed backoff when longer. |
+| `WEBHOOK_BASE_BACKOFF_MS` | | `1000` | Base backoff (ms, >= 50) for the first retry; subsequent retries double exponentially ±50% "Full Jitter" AWS pattern (1s → ~0.5–1.5s → ~1–3s → ~2–6s for default 3 retries). |
 | `RESULT_PUBLISHED_WEBHOOK_URL` | | — | Optional URL called with POST JSON when an executor publishes a result. |
 | **Smart accounts (scripts only)** | | | |
 | `ACCOUNT_WASM_HASH` | (scripts only) | | WASM hash of a deployed OpenZeppelin smart account (see [Known limitations](#known-limitations)). |

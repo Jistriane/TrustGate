@@ -1,6 +1,7 @@
 import { EventEmitter } from 'events';
 import { Keypair } from '@stellar/stellar-sdk';
 import { Task } from '../models/task';
+import { logger } from '../config/logger';
 
 export interface FeedTick {
   sequence: number;
@@ -32,8 +33,14 @@ export class TaskFeedService extends EventEmitter {
 
     const tick: FeedTick = { sequence, taskId: task.id, timestamp, signature };
 
-    console.log(
-      `[Task Feed] tick #${tick.sequence} — task ${tick.taskId} published by ${this.signingKey.publicKey()} (sig ${tick.signature.slice(0, 16)}...)`,
+    logger.info(
+      {
+        sequence: tick.sequence,
+        taskId: tick.taskId,
+        signingPublicKey: this.signingKey.publicKey(),
+        signaturePrefix: tick.signature.slice(0, 16),
+      },
+      '[Task Feed] tick — task published',
     );
 
     this.emit('tick', tick);

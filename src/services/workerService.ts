@@ -7,14 +7,18 @@ import { PgTaskRepository } from '../repositories/taskRepository';
 import { PgBidRepository } from '../repositories/bidRepository';
 import { EscrowServiceLike } from './escrowService';
 import { OutboxService } from './outboxService';
-import { WebhookService } from './webhookService';
+import { classifyWebhookError, WebhookService } from './webhookService';
 import { toTaskDto } from '../presenters/taskPresenter';
+import { logger } from '../config/logger';
 import {
   tgOutboxFailed,
   tgOutboxUnprocessed,
   tgStreamLength,
   tgStreamPending,
   tgStreamPendingConsumer,
+  tgWebhookAttemptsTotal,
+  tgWebhookFailedPermanentTotal,
+  tgWebhookRetriesTotal,
   tgWorkerAutoClaimEntriesTotal,
   tgWorkerDispatchTotal,
   tgWorkerDueRetries,
@@ -103,16 +107,87 @@ export class WorkerService {
       throw new Error('invalid payload');
     }
 
-    const res = await this.webhookService.postJson(this.options.webhookUrl, {
+    const webhookPayload = {
       eventId,
       type: 'result_published',
       taskId,
       executorPublicKey,
       payloadHash,
       publishedAt,
+    };
+    const eventType = 'result_published';
+    const log = logger.child({
+      component: 'worker:webhook',
+      eventId,
+      eventType,
+      taskId,
+      executorPublicKey,
+      payloadHash,
+      webhookUrl: this.options.webhookUrl,
     });
-    if (res.status < 200 || res.status >= 300) {
-      throw new Error(`webhook failed: ${res.status} ${res.bodyText}`);
+
+    try {
+      await this.webhookService.postJson(this.options.webhookUrl, webhookPayload, {
+        onAttempt: ({ attemptIndex, totalAttempts, statusClass, httpStatus, willRetry, sleepMs, err }) => {
+          tgWebhookAttemptsTotal.labels({ event_type: eventType, status_class: statusClass ?? 'network' }).inc();
+          if (willRetry) {
+            const info = classifyWebhookError(err);
+            // Prefer explicit retry_after classification when caller signals it
+            const hasRetryAfter =
+              err !== null &&
+              typeof err === 'object' &&
+              typeof (err as { retryAfterSeconds?: unknown }).retryAfterSeconds === 'number' &&
+              (err as { retryAfterSeconds: number }).retryAfterSeconds > 0;
+            const reason = hasRetryAfter ? 'retry_after' : info.retryReason ?? 'network';
+            tgWebhookRetriesTotal.labels({ event_type: eventType, reason }).inc();
+            log.warn(
+              {
+                attempt: attemptIndex + 1,
+                totalAttempts,
+                statusClass,
+                httpStatus,
+                sleepMs,
+                retryReason: reason,
+                errMessage: err instanceof Error ? err.message : String(err ?? ''),
+              },
+              'webhook attempt failed, scheduling retry',
+            );
+          } else if (statusClass && (statusClass === '2xx' || statusClass === '3xx')) {
+            log.info(
+              {
+                attempt: attemptIndex + 1,
+                totalAttempts,
+                httpStatus,
+              },
+              'webhook delivered',
+            );
+          }
+        },
+      });
+    } catch (err) {
+      const info = classifyWebhookError(err);
+      const httpStatus = err !== null && typeof err === 'object' && 'status' in err ? (err as { status: number }).status : undefined;
+      const lastStatusClass: '2xx' | '3xx' | '4xx' | '5xx' | 'network' | 'timeout' =
+        typeof httpStatus === 'number'
+          ? httpStatus >= 500
+            ? '5xx'
+            : httpStatus >= 400
+              ? '4xx'
+              : httpStatus >= 300
+                ? '3xx'
+                : '2xx'
+          : info.statusClass;
+      tgWebhookFailedPermanentTotal.labels({ event_type: eventType, last_status_class: lastStatusClass }).inc();
+      const errMessage = err instanceof Error ? err.message : String(err ?? '');
+      log.error(
+        {
+          lastStatusClass,
+          httpStatus,
+          errMessage,
+        },
+        'webhook permanently failed after inner retries; worker outer loop will re-enqueue via XAUTOCLAIM',
+      );
+      throw err;
     }
   }
 
@@ -352,7 +427,16 @@ export class WorkerService {
         const ms = Number(process.hrtime.bigint() - start) / 1e6;
         tgWorkerTickTotal.inc({ status: 'error' });
         tgWorkerTickLatencyMs.observe({ status: 'error' }, ms);
-        console.error('[Worker] tick failed:', err);
+        logger.error(
+          {
+            err,
+            streamKey: this.options.streamKey,
+            consumerGroup: this.options.consumerGroup,
+            consumerName: this.options.consumerName,
+            tickLatencyMs: ms,
+          },
+          '[Worker] tick failed',
+        );
       } finally {
         this.running = false;
       }

@@ -4,6 +4,7 @@ import { BidRepositoryLike } from '../repositories/bidRepository';
 import { EscrowServiceLike } from './escrowService';
 import { formatUsdcStroopsToDecimal } from '../utils/money';
 import { OutboxService } from './outboxService';
+import { logger } from '../config/logger';
 
 export interface TimeoutRunResult {
   expiredTaskIds: string[];
@@ -36,19 +37,25 @@ export class TimeoutService {
       );
 
       if (!winningBid) {
-        console.warn(`[Timeout] task ${task.id} expired but has no selected bid — skipping`);
+        logger.warn({ taskId: task.id }, '[Timeout] task expired but has no selected bid — skipping');
         continue;
       }
 
       try {
         const collateralAmount = Number(formatUsdcStroopsToDecimal(winningBid.collateralStroops));
         const result = await this.escrowService.confiscate(winningBid.escrowId, collateralAmount);
-        console.log(
-          `[Timeout] task ${task.id} expired — confiscated escrow ${winningBid.escrowId} ` +
-            `(requester: ${result.requesterShare}, marketplace: ${result.marketplaceShare}, dispute ${result.disputeId})`,
+        logger.info(
+          {
+            taskId: task.id,
+            escrowId: winningBid.escrowId,
+            requesterShare: result.requesterShare,
+            marketplaceShare: result.marketplaceShare,
+            disputeId: result.disputeId,
+          },
+          '[Timeout] task expired — confiscated escrow',
         );
       } catch (err) {
-        console.error(`[Timeout] failed to confiscate collateral for task ${task.id}:`, err);
+        logger.error({ err, taskId: task.id }, '[Timeout] failed to confiscate collateral');
         continue;
       }
 
@@ -68,7 +75,7 @@ export class TimeoutService {
 
   schedule(cronExpression: string = '*/5 * * * *'): ScheduledTask {
     return cron.schedule(cronExpression, () => {
-      this.runOnce().catch((err) => console.error('[Timeout] scheduled job failed:', err));
+      this.runOnce().catch((err) => logger.error({ err }, '[Timeout] scheduled job failed'));
     });
   }
 }

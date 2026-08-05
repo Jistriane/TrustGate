@@ -2,6 +2,7 @@ import { Task } from '../models/task';
 import { Bid } from '../models/bid';
 import { TaskRepositoryLike } from '../repositories/taskRepository';
 import { BidRepositoryLike } from '../repositories/bidRepository';
+import { logger } from '../config/logger';
 
 export class TaskNotFoundError extends Error {}
 export class TaskNotOpenError extends Error {}
@@ -52,8 +53,14 @@ export class AuctionService {
       }
     }
 
-    console.log(
-      `[Auction] task ${taskId} assigned to executor ${winningBid.executorPublicKey} (bid ${winningBid.id}, amount ${winningBid.amountStroops})`,
+    logger.info(
+      {
+        taskId,
+        executorPublicKey: winningBid.executorPublicKey,
+        bidId: winningBid.id,
+        amountStroops: winningBid.amountStroops,
+      },
+      '[Auction] task assigned to executor',
     );
 
     return { task: updatedTask, winningBid: updatedWinningBid };

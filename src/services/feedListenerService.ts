@@ -1,4 +1,5 @@
 import { FeedTick, TaskFeedService } from './taskFeedService';
+import { logger } from '../config/logger';
 
 /**
  * Simulates an executor listening to the marketplace's task feed:
@@ -6,8 +7,9 @@ import { FeedTick, TaskFeedService } from './taskFeedService';
  */
 export class FeedListenerService {
   private readonly handleTick = (tick: FeedTick): void => {
-    console.log(
-      `[Feed Listener] received tick #${tick.sequence} — new task available: ${tick.taskId}`,
+    logger.info(
+      { sequence: tick.sequence, taskId: tick.taskId },
+      '[Feed Listener] received tick — new task available',
     );
   };
 

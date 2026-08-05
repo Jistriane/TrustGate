@@ -1,12 +1,23 @@
 import { NextFunction, Request, Response } from 'express';
+import { logger } from '../config/logger';
 
 export function errorHandler(
   err: unknown,
-  _req: Request,
+  req: Request,
   res: Response,
   _next: NextFunction,
 ): void {
-  console.error('Unhandled error:', err);
+  logger.error(
+    {
+      err,
+      method: req.method,
+      url: req.originalUrl,
+      statusCode: res.statusCode,
+      remoteAddress: req.ip,
+      requestId: req.headers['x-request-id'] ?? undefined,
+    },
+    'Unhandled error',
+  );
 
   if (res.headersSent) {
     return;

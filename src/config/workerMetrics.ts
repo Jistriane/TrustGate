@@ -81,3 +81,24 @@ export const tgWorkerDueRetries = new Gauge({
   labelNames: ['handler'] as const,
   registers: [metricsRegistry],
 });
+
+export const tgWebhookAttemptsTotal = new Counter({
+  name: 'tg_webhook_attempts_total',
+  help: 'Total outbound webhook HTTP attempts by event type and result status class. status_class is one of: 2xx/3xx/4xx/5xx/network/timeout.',
+  labelNames: ['event_type', 'status_class'] as const,
+  registers: [metricsRegistry],
+});
+
+export const tgWebhookRetriesTotal = new Counter({
+  name: 'tg_webhook_retries_total',
+  help: 'Total retries triggered by the exponential-backoff wrapper inside a single webhook call. reason is one of: 5xx/429/408/network/timeout/retry_after.',
+  labelNames: ['event_type', 'reason'] as const,
+  registers: [metricsRegistry],
+});
+
+export const tgWebhookFailedPermanentTotal = new Counter({
+  name: 'tg_webhook_failed_permanent_total',
+  help: 'Total webhook calls that permanently failed (inner postJson retry exhaustion OR worker-level WORKER_MAX_ATTEMPTS reached). Non-retryable (4xx) and retryable (5xx/network) failures both count here after the outermost retry loop gives up.',
+  labelNames: ['event_type', 'last_status_class'] as const,
+  registers: [metricsRegistry],
+});

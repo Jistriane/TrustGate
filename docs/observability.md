@@ -271,6 +271,24 @@ These are initial, conservative thresholds to reduce MTTR and catch regressions 
 - **Suggested alert**:
   - Critical: `tg_outbox_failed > 0` for 2m (no acceptable duration for a stuck failed stream publisher)
 
+#### Result-published webhook delivery
+
+- **Goal (SLO)**: 99.9% successful permanent-delivery rate over 30d for events that have a non-empty `RESULT_PUBLISHED_WEBHOOK_URL` configured. Permanent failure = inner 4 HTTP retries (`WEBHOOK_MAX_RETRIES=3` default) + outer worker `WORKER_MAX_ATTEMPTS=10` re-attempts = ~40 attempts over ~1 h total lifetime before giving up.
+- **Prometheus metrics (source of truth: `src/config/workerMetrics.ts`)**:
+  - `tg_webhook_attempts_total{event_type,status_class}` — per-HTTP-attempt counter (2xx/4xx/5xx/network/timeout)
+  - `tg_webhook_retries_total{event_type,reason}` — reasons for triggering an inner retry (5xx/429/408/network/timeout/retry_after)
+  - `tg_webhook_failed_permanent_total{event_type,last_status_class}` — post-retry exhaustion permanent failure counter (fires both for 4xx fail-fast and 5xx/network after the last attempt)
+- **PromQL SLOs**:
+  - Delivery success rate: `sum(rate(tg_webhook_attempts_total{status_class=~"2xx|3xx"}[1h])) / sum(rate(tg_webhook_attempts_total[1h])) >= 0.99`
+  - Inner retry rate anomaly: `sum(rate(tg_webhook_retries_total[10m])) / sum(rate(tg_webhook_attempts_total[10m])) > 0.2` — >20% of attempts are retries → partner endpoint unreliable
+  - Permanent failures (Critical): `increase(tg_webhook_failed_permanent_total[15m]) > 0` — any permanent webhook loss in a 15-min window is a delivery regression requiring investigation
+- **Suggested alerts**:
+  - Warning: inner retry rate >20% for 10m (check partner 429/5xx, Retry-After headers in pino worker:webhook logs)
+  - Critical: any permanent failure over 15m (check logs component=worker:webhook + XAUTOCLAIM for those event_ids; manually re-emit via `outbox` row if partner endpoint recovered)
+- **How to read locally**:
+  - `curl -sS http://localhost:9090/api/v1/query?query=tg_webhook_attempts_total | jq '.data.result'`
+  - Loki structured query: `{app="trustgate"} component="worker:webhook" | json lastStatusClass="lastStatusClass" | lastStatusClass != "2xx" | head 50`
+
 ### Incident runbook (P0/P1)
 
 This section is a high-signal operational playbook. It is intentionally short and action-oriented.
