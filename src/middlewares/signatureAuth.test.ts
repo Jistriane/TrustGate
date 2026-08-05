@@ -100,6 +100,52 @@ describe('signatureAuth', () => {
     process.env.TG_ALLOW_CLIENT_NONCE = prevAllow;
   });
 
+  it('can be enforced on local network when explicitly enabled', async () => {
+    const prevNetwork = process.env.NETWORK;
+    const prevNodeEnv = process.env.NODE_ENV;
+    const prevAllow = process.env.TG_ALLOW_CLIENT_NONCE;
+    process.env.NETWORK = 'local';
+    process.env.NODE_ENV = 'development';
+    process.env.TG_ALLOW_CLIENT_NONCE = 'false';
+
+    const app = express();
+    app.set('trust proxy', true);
+    app.use(
+      express.json({
+        verify: (req, _res, buf) => {
+          (req as unknown as { rawBody?: Buffer }).rawBody = buf;
+        },
+      }),
+    );
+    app.post('/protected', signatureAuth({ enforceInLocal: true }), (_req, res) => res.status(200).json({ ok: true }));
+
+    const kp = Keypair.random();
+    const timestamp = Date.now();
+    const nonce = 'b4f43771-41cf-44a4-8c62-5c400c67e8c9';
+    fakeRedis.store.set(`tg:nonce2:${kp.publicKey()}:${nonce}`, String(timestamp));
+
+    const body = { hello: 'world' };
+    const rawBody = Buffer.from(JSON.stringify(body));
+    const payload = `POST\n/protected\n${timestamp}\n${nonce}\n${sha256Hex(rawBody)}`;
+    const signature = kp.sign(Buffer.from(payload)).toString('base64');
+
+    const response = await request(app)
+      .post('/protected')
+      .set('X-Forwarded-For', '203.0.113.14')
+      .set('x-tg-public-key', kp.publicKey())
+      .set('x-tg-timestamp', String(timestamp))
+      .set('x-tg-nonce', nonce)
+      .set('x-tg-signature', signature)
+      .send(body);
+
+    expect(response.status).toBe(200);
+    expect(fakeRedis.store.has(`tg:nonce2:${kp.publicKey()}:${nonce}`)).toBe(false);
+
+    process.env.NETWORK = prevNetwork;
+    process.env.NODE_ENV = prevNodeEnv;
+    process.env.TG_ALLOW_CLIENT_NONCE = prevAllow;
+  });
+
   it('rejects replay when nonce is already consumed', async () => {
     const prevNetwork = process.env.NETWORK;
     const prevNodeEnv = process.env.NODE_ENV;

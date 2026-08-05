@@ -234,6 +234,27 @@ Notes:
 - The request body hash is computed from the exact JSON string sent over the wire. Always use the same `bodyText` for hashing and `fetch`.
 - If you want users to pick another wallet, initialize the kit with a different `*_ID` or use the kit's built-in modal and call `kit.setWallet(...)` before `getAddress()`.
 
+### Freighter smoke test (local/Docker)
+
+To validate Freighter signing against a running local stack, use the built-in smoke route:
+
+1) Start Docker (local network + mocks recommended):
+
+```bash
+docker compose up --build -d
+```
+
+2) From your React app (Freighter via Stellar Wallets Kit), call:
+
+- `POST /auth/nonce` to get `{ timestamp, nonce }`
+- `POST /auth/signed-smoke` with the signature headers and a body like `{ publicKey: "...", hello: "world" }`
+
+Expected response:
+
+```json
+{ "ok": true, "publicKey": "G..." }
+```
+
 ## Example: full lifecycle via curl
 
 ```bash

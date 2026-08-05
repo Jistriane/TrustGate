@@ -7,6 +7,7 @@ export interface SignatureAuthOptions {
   required?: boolean;
   matchBodyField?: string;
   nonceTtlSeconds?: number;
+  enforceInLocal?: boolean;
 }
 
 function sha256Hex(buf: Buffer): string {
@@ -44,9 +45,10 @@ async function incrWithTtl(
 export function signatureAuth(options: SignatureAuthOptions = {}) {
   const required = options.required ?? true;
   const nonceTtlSeconds = options.nonceTtlSeconds ?? 600;
+  const enforceInLocal = options.enforceInLocal ?? false;
 
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    if (process.env.NETWORK === 'local' || process.env.NODE_ENV === 'test') {
+    if ((!enforceInLocal && process.env.NETWORK === 'local') || process.env.NODE_ENV === 'test') {
       next();
       return;
     }

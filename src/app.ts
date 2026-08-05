@@ -257,6 +257,13 @@ export function createApp(overrides: AppOverrides = {}): Express {
    *         content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
    */
   app.post('/auth/nonce', authController.issueNonce);
+  app.post(
+    '/auth/signed-smoke',
+    signatureAuth({ enforceInLocal: true, matchBodyField: 'publicKey' }),
+    (req: Request, res: Response) => {
+      res.status(200).json({ ok: true, publicKey: (req as unknown as { authPublicKey?: string }).authPublicKey });
+    },
+  );
 
   const healthCheckService = new HealthCheckService(config);
   /**
