@@ -14,6 +14,7 @@ import {
   tgOutboxUnprocessed,
   tgStreamLength,
   tgStreamPending,
+  tgStreamPendingConsumer,
   tgWorkerAutoClaimEntriesTotal,
   tgWorkerDispatchTotal,
   tgWorkerDueRetries,
@@ -35,6 +36,7 @@ export class WorkerService {
   private timer?: NodeJS.Timeout;
   private running = false;
   private lastBacklogSampleAt = 0;
+  private pendingConsumerKeys = new Set<string>();
 
   constructor(
     private readonly outbox: PgOutboxRepository,
@@ -161,6 +163,28 @@ export class WorkerService {
         if (Number.isFinite(pending)) {
           tgStreamPending.set({ stream, group }, pending);
         }
+
+        const byConsumerRaw = Array.isArray(pendingRes) ? pendingRes[3] : undefined;
+        const nextKeys = new Set<string>();
+        if (Array.isArray(byConsumerRaw)) {
+          for (const entry of byConsumerRaw) {
+            const consumer = String(Array.isArray(entry) ? entry[0] : '');
+            const count = Number(Array.isArray(entry) ? entry[1] : 0);
+            if (!consumer) continue;
+            if (!Number.isFinite(count)) continue;
+            const key = `${stream}|${group}|${consumer}`;
+            nextKeys.add(key);
+            tgStreamPendingConsumer.set({ stream, group, consumer }, count);
+          }
+        }
+
+        for (const key of this.pendingConsumerKeys) {
+          if (nextKeys.has(key)) continue;
+          const [prevStream, prevGroup, prevConsumer] = key.split('|');
+          if (!prevStream || !prevGroup || !prevConsumer) continue;
+          tgStreamPendingConsumer.set({ stream: prevStream, group: prevGroup, consumer: prevConsumer }, 0);
+        }
+        this.pendingConsumerKeys = nextKeys;
       } catch (err) {
         void err;
       }

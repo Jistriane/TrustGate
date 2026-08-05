@@ -147,6 +147,24 @@ groups:
           summary: "TrustGate stream pending backlog (critical)"
           description: "XPENDING backlog is above 1000 for 5m. Delivery is heavily degraded."
 
+      - alert: TrustGateStreamPendingConsumerStuckWarning
+        expr: max(tg_stream_pending_consumer) by (stream, group, consumer) > 100
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "TrustGate consumer pending backlog (warning)"
+          description: "A consumer has XPENDING > 100 for 10m. That consumer may be stuck or slow."
+
+      - alert: TrustGateStreamPendingConsumerStuckCritical
+        expr: max(tg_stream_pending_consumer) by (stream, group, consumer) > 1000
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "TrustGate consumer pending backlog (critical)"
+          description: "A consumer has XPENDING > 1000 for 5m. Delivery is heavily degraded or consumer is stuck."
+
       - alert: TrustGateOutboxUnprocessedBacklogWarning
         expr: tg_outbox_unprocessed > 100
         for: 10m

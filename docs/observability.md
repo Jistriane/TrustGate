@@ -84,6 +84,7 @@ docker compose -f docker-compose.yml -f docker-compose.observability.yml up --bu
 - `tg_worker_due_retries{handler}`
 - `tg_stream_length{stream,group}`
 - `tg_stream_pending{stream,group}`
+- `tg_stream_pending_consumer{stream,group,consumer}`
 
 **Alerts / symptoms**
 

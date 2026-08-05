@@ -214,6 +214,27 @@
       ],
       "title": "Outbox backlog (unprocessed/failed)",
       "type": "timeseries"
+    },
+    {
+      "datasource": "${DS_PROMETHEUS}",
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 32 },
+      "id": 9,
+      "options": {
+        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "single", "sort": "none" }
+      },
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "max(tg_stream_pending_consumer) by (stream, group, consumer)",
+          "legendFormat": "{{stream}}/{{group}} {{consumer}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Pending backlog by consumer",
+      "type": "timeseries"
     }
   ],
   "refresh": "10s",

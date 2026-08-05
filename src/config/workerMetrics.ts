@@ -49,6 +49,13 @@ export const tgStreamPending = new Gauge({
   registers: [metricsRegistry],
 });
 
+export const tgStreamPendingConsumer = new Gauge({
+  name: 'tg_stream_pending_consumer',
+  help: 'Redis Stream pending messages (XPENDING by-consumer summary) by stream, group, and consumer',
+  labelNames: ['stream', 'group', 'consumer'] as const,
+  registers: [metricsRegistry],
+});
+
 export const tgWorkerAutoClaimEntriesTotal = new Counter({
   name: 'tg_worker_autoclaim_entries_total',
   help: 'Total number of stream entries processed via XAUTOCLAIM',
