@@ -289,3 +289,46 @@ This section is a high-signal operational playbook. It is intentionally short an
 
 - Roll back the client release if most traffic is failing.
 - If abuse is suspected, apply WAF/rate limits at the edge.
+
+#### P0: Safe rollback procedure
+
+This is a conservative rollback checklist intended to be followed even under pressure. Prefer rolling back the smallest possible surface area.
+
+**Goals**
+
+- Stop the incident blast radius fast.
+- Avoid making data integrity worse (double side-effects).
+- Restore service health signals (`/health/detailed`, worker ticks, outbox publish).
+
+**Pre-flight**
+
+1) Confirm the symptom and scope:
+   - Which alert fired (auth nonce, worker ticks, outbox failures)?
+   - Which routes/types are impacted?
+2) Prefer rolling back the client first when the symptom is auth noise (401/429 spikes).
+3) Confirm idempotency protection is in place:
+   - Worker uses `event_consumptions` (safe to restart/reprocess).
+4) Snapshot current state for incident notes:
+   - current deploy version/commit, timestamp, and active alerts.
+
+**Rollback execution**
+
+1) Roll back one component at a time (in order):
+   - client (if applicable) → API → worker
+2) For API/worker, do rolling restart to keep some capacity online (when possible).
+3) Do not disable security controls (auth/rate limits) as a “fix”; treat that as last resort with explicit approval.
+
+**Post-rollback validation (must pass)**
+
+- `GET /health` is 200.
+- `GET /health/detailed` shows `redis: up` and `stellarRpc: up` (and DB up when configured).
+- `tg_worker_tick_total{status="success"}` resumes increasing.
+- `tg_outbox_publish_events_total{result="failed"}` stops increasing.
+- Auth signals stabilize:
+  - `tg_auth_nonce_requests_total{status="200"}` resumes.
+  - 401/429 rates return to baseline (or drop materially).
+
+**Aftercare**
+
+- If the rollback fixed it, open a follow-up issue for root cause and add a regression test if applicable.
+- If the rollback did not fix it within one cycle, stop and reassess the hypothesis; avoid serial “random” rollbacks.
