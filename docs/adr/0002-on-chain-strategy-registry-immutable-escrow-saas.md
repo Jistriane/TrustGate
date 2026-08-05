@@ -3,11 +3,11 @@
 ## Status
 - Aceito
 - Data: 2026-08-05
-- Implementação (2026-08-05 update): **3/6 pilares codados em src/ (P1.8A MVP Pubnet)**
+- Implementação (2026-08-05 update): **4/6 pilares com fundação codada em src/ (P1.8A + P2.1)**
   - ✅ Pausas off-chain de emergência: `PAUSE_NEW_TASKS`, `PAUSE_NEW_BIDS`, `PAUSE_WORKER_CONSUMPTION` (3 env vars parseadas em `src/config/safetyFeatures.ts`)
   - ✅ Allowlist/Denylist off-chain executores: `EXECUTOR_DENYLIST` (CSV Stellar G…, validado com regex `^G[A-Z2-7]{55}$`, aplicado em `BidController.create` + `TaskController.complete`)
   - ✅ Abstração `IProviderEscrow` + factory `createEscrowProvider()` + `ESCROW_IMPLEMENTATION=trustlesswork|mock` (antes tipo chamado `EscrowServiceLike`; mantemos alias deprecated para retrocompatibilidade)
-  - ⏳ Chave pública de verificação webhook SaaS Escrow: `TRUSTLESS_WORK_WEBHOOK_PUBLIC_KEY` + middleware verify (pendente P2 — nenhum endpoint de incoming dispute webhook existe hoje)
+  - ✅ **Fundação** Chave pública de verificação webhook SaaS Escrow: `TRUSTLESS_WORK_WEBHOOK_PUBLIC_KEY` (parse em safetyFeatures, validação `len >= 32`, export via `SafetyFeatures.trustlessWorkWebhookPublicKey`, log no boot via `sha256[:8]` preview sem leak). Endpoint `POST /webhooks/trustless-work` + middleware de assinatura Ed25519/SPKI ainda **pendentes P2.2** (não há contrato de request do lado Trustless Work para desenhar middleware ainda).
   - ⏳ Leitura dual registry blue-green (v1 + v2 ao mesmo tempo por 7 dias): pendente até existir v2 para migrar
   - ⏳ Nosso próprio contrato escrow WASM (fallback exit 15 dias): blueprint documentado, nenhum contrato `contracts/escrow/src/lib.rs` existe ainda
 

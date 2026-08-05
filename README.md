@@ -310,6 +310,7 @@ a ready-made testnet config lives in [.env.testnet](file:///home/jistriane/Trust
 | `OUTBOX_CONSUMER_NAME` | | `hostname:pid` | Unique consumer name within the group. Autodetect if empty. |
 | `WORKER_POLL_MS` | | `2000` | Interval between worker ticks. Must be ≥ handler worst-case latency to avoid backpressure. |
 | `WORKER_MAX_ATTEMPTS` | | `10` | Max retries per event via `due_retries`; above threshold, event moves to dead-letter (manual triage). |
+| `OUTBOX_BACKLOG_SAMPLE_MS` | | `5000` | Worker tick cadence for sampling Redis Streams XLEN / XPENDING and emitting Prometheus gauges `tg_stream_length`, `tg_stream_pending`, `tg_stream_pending_consumer`. Numeric, min `1000`. Default matches ADR 0001 § Sampling path; raise to `10000`–`15000` for workloads > 1k events/s. |
 | **MPP / listing fees** | | | |
 | `MPP_SECRET_KEY` | ✅ on testnet/pubnet | | HMAC ≥ 32 bytes. Binds `POST /tasks` charge challenges to their contents. Unused on `local`. |
 | **Escrow (Trustless Work)** | | | |
@@ -331,6 +332,7 @@ a ready-made testnet config lives in [.env.testnet](file:///home/jistriane/Trust
 | `PAUSE_NEW_BIDS` | | `false` | When `true`, returns 503 on `POST /bids` for any task (doesn't touch task lifecycle). |
 | `PAUSE_WORKER_CONSUMPTION` | | `false` | When `true`, the outbox worker keeps sampling backlog metrics and publishing DB rows → Redis Streams, but **never claims/polls/dispatches any event** (no milestone release, no webhook, no retries). Safe P0 "press stop before deploying patch" toggle. XAUTOCLAIM resumes automatically on toggle off with zero data loss. Increments `tg_worker_tick_total{status="paused"}` each tick. |
 | `EXECUTOR_DENYLIST` | | (empty) | Comma-separated Stellar `G...` addresses. Blocks executors on two surfaces: (1) `POST /bids` (403, before escrow collateral lock) and (2) `POST /tasks/:id/complete` (403, before milestone release for their winning bid). Each hit is logged as structured `warn` with `executorPublicKey`, `taskId`, `reason="denylist_hit"`, `endpoint`. |
+| `TRUSTLESS_WORK_WEBHOOK_PUBLIC_KEY` | | — | (P2 foundation) Ed25519/SPKI public key the SaaS escrow will use to sign incoming dispute/adjustment/chargeback webhooks. Parse-time validation only: `length >= 32` (catches fat-finger typos). The actual `POST /webhooks/trustless-work` endpoint + verify middleware **don't exist yet**; the parser+DI are ready today so the pubkey is available in `SafetyFeatures.trustlessWorkWebhookPublicKey` when we implement them. Logged on boot via `sha256[:8]` preview (never the key itself). |
 | **Smart accounts (scripts only)** | | | |
 | `ACCOUNT_WASM_HASH` | (scripts only) | | WASM hash of a deployed OpenZeppelin smart account (see [Known limitations](#known-limitations)). |
 | `REQUESTER_SECRET` | (scripts only) | | Requester key used by `deploy-smart-account.ts`. |

@@ -7,6 +7,7 @@ import { TaskFeedService } from './services/taskFeedService';
 import { FeedListenerService } from './services/feedListenerService';
 import { TimeoutService } from './services/timeoutService';
 import path from 'path';
+import { createHash } from 'crypto';
 import { getDbPool } from './db/pool';
 import { runMigrations } from './db/migrate';
 import { PgOutboxRepository } from './repositories/outboxRepository';
@@ -72,6 +73,7 @@ async function checkStellarConnectivity(): Promise<void> {
 
 async function main(): Promise<void> {
   const safety = loadSafetyFeatures();
+  const twWHPubKey = safety.trustlessWorkWebhookPublicKey;
   logger.info(
     {
       pauseNewTasks: safety.pauseNewTasks,
@@ -80,6 +82,11 @@ async function main(): Promise<void> {
       escrowImplementation: safety.escrowImplementation,
       executorDenylistSize: safety.executorDenylist.size,
       executorDenylistPreview: [...safety.executorDenylist].slice(0, 3),
+      trustlessWorkWebhookPublicKeySet: twWHPubKey !== undefined,
+      trustlessWorkWebhookPublicKeyLen: twWHPubKey?.length,
+      trustlessWorkWebhookPublicKeySha256Prefix8: twWHPubKey
+        ? createHash('sha256').update(twWHPubKey).digest('hex').slice(0, 8)
+        : undefined,
     },
     'Safety features loaded',
   );
@@ -149,6 +156,11 @@ async function main(): Promise<void> {
       baseBackoffMs: webhookBaseBackoffMs,
     });
     const redis = await getRedisClient();
+    const parsedBacklogSampleMs = Number(process.env.OUTBOX_BACKLOG_SAMPLE_MS);
+    const backlogSampleIntervalMs =
+      Number.isFinite(parsedBacklogSampleMs) && parsedBacklogSampleMs >= 1000
+        ? Math.trunc(parsedBacklogSampleMs)
+        : 5000;
     const worker = new WorkerService(
       outbox,
       consumptions,
@@ -165,6 +177,7 @@ async function main(): Promise<void> {
         consumerName: process.env.OUTBOX_CONSUMER_NAME ?? `worker-${process.pid}`,
         maxAttempts: Number(process.env.WORKER_MAX_ATTEMPTS ?? 10),
         webhookUrl: process.env.RESULT_PUBLISHED_WEBHOOK_URL,
+        backlogSampleIntervalMs,
       },
       safety,
     );

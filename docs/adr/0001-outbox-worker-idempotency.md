@@ -48,7 +48,7 @@ Para cada tick do worker, um caminho de **amostragem de backlog** executa a cada
 | Outbox unprocessed | Postgres `processed_at IS NULL` | `tg_outbox_unprocessed` | Detecta publisher (Postgres → Stream) parado. |
 | Outbox failed | Postgres `attempts > 0 AND processed_at IS NULL` | `tg_outbox_failed` | Detecta publisher com falhas persistentes (emergência). |
 
-Intervalo de amostragem (5 s) foi escolhido para não sobrecarregar Redis/Postgres em ticks de 2 s; para workloads com >1k events/s, é seguro subir o intervalo para 10–15 s via ajuste do sampling path (hardcoded hoje; candidato a `OUTBOX_BACKLOG_SAMPLE_MS` em iteração futura).
+Intervalo de amostragem (default 5 s, ajustável via env var `OUTBOX_BACKLOG_SAMPLE_MS` em src/server.ts com mínimo 1000 ms e floor `Math.trunc`) foi escolhido para não sobrecarregar Redis/Postgres em ticks de 2 s; para workloads com >1k events/s, é seguro subir o intervalo para 10–15 s via ajuste da env var (não é mais hardcoded como na revisão inicial deste ADR; WorkerServiceOptions aceita `backlogSampleIntervalMs` como campo opcional, default 5000 ms).
 
 ## Alternativas consideradas
 - Executar integrações externas no request/response (síncrono)

@@ -35,6 +35,7 @@ export interface WorkerServiceOptions {
   consumerName: string;
   maxAttempts: number;
   webhookUrl?: string;
+  backlogSampleIntervalMs?: number;
 }
 
 export class WorkerService {
@@ -223,7 +224,7 @@ export class WorkerService {
 
     const maybeSampleBacklog = async () => {
       const now = Date.now();
-      const sampleIntervalMs = 5000;
+      const sampleIntervalMs = this.options.backlogSampleIntervalMs ?? 5000;
       if (now - this.lastBacklogSampleAt < sampleIntervalMs) return;
       this.lastBacklogSampleAt = now;
 

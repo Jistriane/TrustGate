@@ -4,6 +4,7 @@ export interface SafetyFeatures {
   pauseWorkerConsumption: boolean;
   executorDenylist: Set<string>;
   escrowImplementation: 'trustlesswork' | 'mock';
+  trustlessWorkWebhookPublicKey?: string;
 }
 
 function parseBoolEnv(name: string, defaultValue: boolean): boolean {
@@ -42,6 +43,17 @@ function parseEscrowImplementation(raw: string | undefined): SafetyFeatures['esc
   );
 }
 
+function parseOptionalStringMinLen(raw: string | undefined, envName: string, minLen: number): string | undefined {
+  if (raw === undefined || raw === '') return undefined;
+  const trimmed = raw.trim();
+  if (trimmed.length < minLen) {
+    throw new Error(
+      `[safetyFeatures] ${envName} too short: expected >= ${minLen} chars when set, got ${trimmed.length}`,
+    );
+  }
+  return trimmed;
+}
+
 let cached: SafetyFeatures | null = null;
 
 export function loadSafetyFeatures(): SafetyFeatures {
@@ -52,6 +64,11 @@ export function loadSafetyFeatures(): SafetyFeatures {
     pauseWorkerConsumption: parseBoolEnv('PAUSE_WORKER_CONSUMPTION', false),
     executorDenylist: parseExecutorDenylist(process.env.EXECUTOR_DENYLIST),
     escrowImplementation: parseEscrowImplementation(process.env.ESCROW_IMPLEMENTATION),
+    trustlessWorkWebhookPublicKey: parseOptionalStringMinLen(
+      process.env.TRUSTLESS_WORK_WEBHOOK_PUBLIC_KEY,
+      'TRUSTLESS_WORK_WEBHOOK_PUBLIC_KEY',
+      32,
+    ),
   };
   return cached;
 }
