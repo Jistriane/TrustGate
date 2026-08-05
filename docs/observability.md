@@ -14,7 +14,7 @@ This document is a practical runbook for diagnosing issues using Prometheus metr
 
 **Prometheus alert rules**
 
-- Alert rules live in `prom/alerts/trustgate-alerts.yml`.
+- Alert rules live in `prom/alerts/trustgate-alerts.yml` (two groups: `trustgate-auth`, `trustgate-worker`).
 - How to load:
   - Add it to your Prometheus config under `rule_files`, for example:
 
@@ -24,6 +24,15 @@ rule_files:
 ```
 
 Then mount/copy `prom/alerts/trustgate-alerts.yml` into that path in your Prometheus deployment.
+
+**Before every deploy — run the baseline verifier**
+
+```bash
+bash scripts/observability-baseline.sh           # full stack + smoke + metrics + prom + grafana
+bash scripts/observability-baseline.sh --keep    # keep the stack alive after success to explore manually
+```
+
+This script fails hard (`set -euo pipefail`) when any of the following regress: alert rules YAML structure, Grafana dashboard JSON structure, app/prom/grafana health, signed-request smoke (`/auth/nonce` → `/auth/signed-smoke` with a freshly generated `Keypair`), presence of required core metrics in `/metrics`, and loading of `trustgate-auth` / `trustgate-worker` rule groups in Prometheus. See [README baseline section](file:///home/jistriane/TrustGate/TrustGate/README.md#L668-L734).
 
 ### Local stack (Docker Compose)
 
@@ -36,6 +45,7 @@ docker compose -f docker-compose.yml -f docker-compose.observability.yml up --bu
 - App metrics: `http://localhost:3000/metrics`
 - Prometheus UI: `http://localhost:9090`
 - Grafana UI: `http://localhost:3001`
+- Dashboards provisioned automatically as anonymous Viewer at `/dashboards`.
 
 ### Auth (signed requests)
 
@@ -113,7 +123,35 @@ docker compose -f docker-compose.yml -f docker-compose.observability.yml up --bu
   - Likely cause: tick is blocked on slow I/O (webhook, escrow, DB).
   - Action:
     - Identify which handler is slow by checking application logs and downstream latencies.
-    - Consider increasing `publishIntervalMs` to reduce pressure, or adding timeouts/circuit breakers for external calls.
+    - Consider increasing `WORKER_POLL_MS` to reduce pressure, or adding timeouts/circuit breakers for external calls.
+
+**Stream backlog (XLEN / PENDING / per-consumer PEL) — how to read**
+
+These three gauges tell different stories — don't treat them as interchangeable:
+
+| Gauge | Redis command | Meaning in TrustGate | When to worry |
+|-------|---------------|----------------------|---------------|
+| `tg_stream_length{stream,group}` | `XLEN tg:events` | Total number of entries still sitting in the stream (includes entries not yet delivered). | Sustained monotonic growth → producer is out-pacing consumers. |
+| `tg_stream_pending{stream,group}` | `XPENDING tg:events tg-workers - + COUNT summary` | Number of entries **delivered but not yet `XACK`ed** (Pending Entries List total). | Growth without commensurate `XACK` rate → handlers slow/erroring before ack. |
+| `tg_stream_pending_consumer{stream,group,consumer}` | `XPENDING tg:events tg-workers - + COUNT per consumer` | PEL broken down by consumer name. Cardinality bounded by number of workers (1–16). | One consumer has a PEL order-of-magnitude higher than peers → consumer stuck, network partition, or `XAUTOCLAIM` hasn't run yet. |
+| `tg_outbox_unprocessed` | Postgres `SELECT COUNT(*) FROM outbox_events WHERE processed_at IS NULL` | Rows persisted but not yet `XADD`ed to the stream (publisher lag). | > 0 for long → outbox publisher is failing (Redis issues). |
+| `tg_outbox_failed` | Postgres `SELECT COUNT(*) FROM outbox_events WHERE processed_at IS NULL AND attempts > 0` | Publisher retried at least once but never succeeded. | Any growth → Redis stream write failures; need infra triage. |
+
+Backlog sampling runs every **5 s** inside the worker tick (separate from per-tick processing to avoid disturbing hot paths).
+
+**Growing backlog alerts / symptoms**
+
+- `tg_stream_pending` and `tg_outbox_unprocessed` both grow:
+  - Likely cause: worker is stuck or Redis is throttling `XREADGROUP`.
+  - Action: follow the [Worker stuck P0 runbook](#p0-worker-stuck--not-ticking); if only one consumer in `tg_stream_pending_consumer` is elevated, check `XAUTOCLAIM` has transferred its PEL to healthy workers.
+
+- Only `tg_stream_pending_consumer{consumer=<name>}` is elevated (rest are low):
+  - Likely cause: one worker instance crashed without graceful shutdown or is network-partitioned from Redis.
+  - Action: confirm the worker process exists; if dead, `XAUTOCLAIM` should recover entries within ~2 idle-time thresholds; force a restart of the remaining workers or add a temporary dedicated dead-letter triage step.
+
+- Only `tg_outbox_failed` grows:
+  - Likely cause: Redis `XADD` failing consistently.
+  - Action: immediate Redis triage per [P0 Redis runbook](#p0-redis-down--degraded).
 
 ### Minimal dashboards (suggestions)
 
@@ -208,6 +246,28 @@ These are initial, conservative thresholds to reduce MTTR and catch regressions 
 - **Suggested alert**:
   - Warning: > 0 for 10m
   - Critical: > 10 for 10m
+
+**Stream backlog (XLEN + PENDING)**
+
+- **Goal (SLO)**: stream size and PEL size are bounded, and do not grow unboundedly even under 2× peak input.
+- **PromQL (growing PEL detector)**:
+  - `increase(tg_stream_pending[10m]) > 100` — pending entries grew by >100 in 10 minutes.
+- **PromQL (growing unprocessed outbox detector)**:
+  - `increase(tg_outbox_unprocessed[10m]) > 50`
+- **PromQL (per-consumer stuck PEL)**:
+  - `max by (consumer) (tg_stream_pending_consumer) > 100 and on (consumer) (tg_stream_pending_consumer offset 5m) > 100` — same consumer has >100 pending entries for >5 minutes (not draining).
+- **Suggested alerts**:
+  - Warning: `tg_stream_pending > 100` for 10m OR `tg_outbox_unprocessed > 50` for 10m
+  - Critical: `tg_stream_pending > 1000` for 5m OR `tg_outbox_failed > 0` for 5m
+  - Warning (per-consumer stuck): `tg_stream_pending_consumer{consumer} > 100` AND has not decreased in 5m
+
+**Outbox failed (sustained)**
+
+- **Goal (SLO)**: `tg_outbox_failed` stays strictly 0 (any failed means the stream publisher cannot even retry).
+- **PromQL**:
+  - `tg_outbox_failed > 0`
+- **Suggested alert**:
+  - Critical: `tg_outbox_failed > 0` for 2m (no acceptable duration for a stuck failed stream publisher)
 
 ### Incident runbook (P0/P1)
 

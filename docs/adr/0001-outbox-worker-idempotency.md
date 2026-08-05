@@ -28,10 +28,27 @@
   - Reduz risco de timeouts e duplicações causadas por retries do cliente.
   - Permite retries e backoff sem travar requests.
   - Mantém Postgres como fonte de verdade e trilha auditável de eventos/consumos.
+  - Permite **observabilidade por backlog** (XLEN / XPENDING summary / XPENDING por consumer) diretamente via métricas Prometheus expostas em `/metrics` — diagnosticar consumer stuck ou backpressure não requer acesso `redis-cli`.
+  - `XAUTOCLAIM` + métricas de per-consumer permitem detectar e recuperar automaticamente de workers mortos sem intervenção manual na grande maioria dos casos.
 - Contras
-  - Introduz consistência eventual: alguns efeitos passam a ocorrer após a resposta HTTP.
-  - Aumenta a superfície operacional (worker + redis streams).
+  - Introduz consistência eventual: alguns efeitos passam a ocorrer após a resposta HTTP (ex.: `POST /tasks/:id/complete` retorna 202, release do escrow via Trustless Work é assíncrono).
+  - Aumenta a superfície operacional (worker + redis streams). Requer **baseline de observabilidade** (signed smoke + métricas obrigatórias + regras Prometheus) antes de cada deploy conforme [docs/observability.md](file:///home/jistriane/TrustGate/TrustGate/docs/observability.md).
   - Exige disciplina para handlers idempotentes e contratos de evento versionáveis.
+  - A métrica `tg_stream_pending_consumer{stream,group,consumer}` tem uma label a mais; **cardinalidade deve ser mantida baixa** (número fixo de consumers, tipicamente 1–16), e o worker zera explicitamente consumers que desaparecem após amostragem para evitar explosão de timeseries.
+
+## Trade-offs operacionais adicionais (2026-08-05 update)
+
+Para cada tick do worker, um caminho de **amostragem de backlog** executa a cada ~5 segundos (desacoplado do hot-path do tick para não adicionar latência em processamento de eventos):
+
+| Amostragem | Onde lê | Métrica exposta | Por quê |
+|-----------|---------|-----------------|---------|
+| Stream size | Redis `XLEN` | `tg_stream_length{stream,group}` | Detecta produtor mais rápido que consumidores. |
+| PEL summary | Redis `XPENDING` summary count | `tg_stream_pending{stream,group}` | Detecta entries entregues mas nunca `XACK`ed (handler lento / erro). |
+| PEL por consumer | Redis `XPENDING` por consumer | `tg_stream_pending_consumer{stream,group,consumer}` | Detecta 1 worker específico travado / partitionado antes que `XAUTOCLAIM` colete. |
+| Outbox unprocessed | Postgres `processed_at IS NULL` | `tg_outbox_unprocessed` | Detecta publisher (Postgres → Stream) parado. |
+| Outbox failed | Postgres `attempts > 0 AND processed_at IS NULL` | `tg_outbox_failed` | Detecta publisher com falhas persistentes (emergência). |
+
+Intervalo de amostragem (5 s) foi escolhido para não sobrecarregar Redis/Postgres em ticks de 2 s; para workloads com >1k events/s, é seguro subir o intervalo para 10–15 s via ajuste do sampling path (hardcoded hoje; candidato a `OUTBOX_BACKLOG_SAMPLE_MS` em iteração futura).
 
 ## Alternativas consideradas
 - Executar integrações externas no request/response (síncrono)
