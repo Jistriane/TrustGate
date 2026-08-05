@@ -2,6 +2,29 @@
 
 This document is a practical runbook for diagnosing issues using Prometheus metrics exposed at `GET /metrics`.
 
+### Setup (Grafana + Prometheus)
+
+**Grafana dashboards**
+
+- Dashboards live in `grafana/dashboards/`:
+  - `trustgate-auth-overview.json`
+  - `trustgate-worker-overview.json`
+- They use a datasource variable named `DS_PROMETHEUS`.
+  - When importing, pick your Prometheus datasource for this variable.
+
+**Prometheus alert rules**
+
+- Alert rules live in `prom/alerts/trustgate-alerts.yml`.
+- How to load:
+  - Add it to your Prometheus config under `rule_files`, for example:
+
+```yml
+rule_files:
+  - /etc/prometheus/alerts/trustgate-alerts.yml
+```
+
+Then mount/copy `prom/alerts/trustgate-alerts.yml` into that path in your Prometheus deployment.
+
 ### Auth (signed requests)
 
 **Key metrics**
