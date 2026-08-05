@@ -4,10 +4,50 @@ set -Eeuo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT_DIR}"
 
+usage() {
+  cat <<'EOF'
+Usage: scripts/observability-baseline.sh [OPTIONS]
+
+Observability full-stack validation baseline:
+  1/6 Spin Prometheus + Grafana + TrustGate via docker compose
+  2/6 Wait healthy (app / Prom / Grafana)
+  3/6 TypeScript smoke checks (signed requests + metrics scrape)
+  4/6 Prom rule groups + targets sanity
+  5/6 Grafana dashboards + datasource provision sanity
+  6/6 RC=0 → success
+
+Options:
+  --keep      Keep docker compose stack running after baseline succeeds
+              (useful for local development, manual exploration, debug).
+              Default: stack is torn down on EXIT/ERR/INT/TERM traps.
+  -h, --help  Show this help and exit.
+
+Environment variables (optional overrides):
+  APP_URL         Default http://127.0.0.1:3000
+  PROM_URL        Default http://127.0.0.1:9090
+  GRAFANA_URL     Default http://127.0.0.1:3001
+  COMPOSE_FILE    Default compose/observability/docker-compose.yml
+EOF
+}
+
 KEEP_STACK="0"
-if [[ "${1:-}" == "--keep" ]]; then
-  KEEP_STACK="1"
-fi
+for arg in "${@:-}"; do
+  case "${arg}" in
+    --keep)
+      KEEP_STACK="1"
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "[baseline][ERR] Unknown argument: ${arg}" >&2
+      echo "" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
 
 log() {
   echo "[baseline] $*"
@@ -199,7 +239,25 @@ wait_for() {
 
 wait_for "app" "${APP_URL}/health" '"status":"ok"'
 wait_for "prometheus-ready" "${PROM_URL}/-/ready" "Prometheus Server is Ready"
-wait_for "grafana-health" "${GRAFANA_URL}/api/health" '"database": "ok"'
+
+# Grafana /api/health usa JSON formatado com espaços variáveis entre versões
+# ("database":"ok" vs "database": "ok" vs "database"  :  "ok"). Usa regex POSIX
+# ERE tolerante via grep, em vez de substring fixa, para evitar timeouts falsos.
+# wait_for() não aceita regex nativamente, então validamos Grafana inline.
+grafana_tries=120; grafana_delay=2
+for ((i=1;i<=grafana_tries;i++)); do
+  code=$(curl -sS -o /tmp/baseline_grafana_body.$$ -w "%{http_code}" --max-time 10 "${GRAFANA_URL}/api/health" || echo "000")
+  body=$(cat /tmp/baseline_grafana_body.$$ 2>/dev/null || echo "")
+  rm -f /tmp/baseline_grafana_body.$$ || true
+  if [[ "${code}" =~ ^2[0-9][0-9]$ ]] && grep -qE '"database"[[:space:]]*:[[:space:]]*"ok"' <<<"${body}"; then
+    log "  grafana-health ready (${GRAFANA_URL}/api/health -> ${code})"
+    break
+  fi
+  if [[ "$i" -eq "$grafana_tries" ]]; then
+    fail "timed out waiting for grafana-health (${GRAFANA_URL}/api/health)"
+  fi
+  sleep "${grafana_delay}"
+done
 
 log "4/6: Run TypeScript checks (signed smoke + metrics + prom + grafana)"
 BASELINE_APP_URL="${APP_URL}" \
