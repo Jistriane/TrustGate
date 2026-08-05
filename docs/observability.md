@@ -25,6 +25,18 @@ rule_files:
 
 Then mount/copy `prom/alerts/trustgate-alerts.yml` into that path in your Prometheus deployment.
 
+### Local stack (Docker Compose)
+
+You can run Prometheus + Grafana locally (and have Prometheus scrape the app) by starting the main stack and the observability stack together:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.observability.yml up --build -d
+```
+
+- App metrics: `http://localhost:3000/metrics`
+- Prometheus UI: `http://localhost:9090`
+- Grafana UI: `http://localhost:3001`
+
 ### Auth (signed requests)
 
 **Key metrics**

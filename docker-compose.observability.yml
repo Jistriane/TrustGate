@@ -1,0 +1,26 @@
+services:
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: trustgate-prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+    volumes:
+      - ./prom/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prom/alerts/trustgate-alerts.yml:/etc/prometheus/alerts/trustgate-alerts.yml:ro
+    ports:
+      - '9090:9090'
+
+  grafana:
+    image: grafana/grafana:11.1.4
+    container_name: trustgate-grafana
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - '3001:3000'
+    depends_on:
+      - prometheus
+
