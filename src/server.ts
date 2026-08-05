@@ -21,6 +21,7 @@ import { WebhookService } from './services/webhookService';
 import { isTransientNetworkError, withRetry } from './utils/retry';
 import { MockEscrowService, shouldMockExternals } from './services/mockExternalServices';
 import { logger } from './config/logger';
+import { loadSafetyFeatures } from './config/safetyFeatures';
 
 async function fundOnFriendbot(horizonUrl: string, publicKey: string): Promise<void> {
   const res = await fetch(`${horizonUrl}/friendbot?addr=${publicKey}`);
@@ -70,6 +71,19 @@ async function checkStellarConnectivity(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  const safety = loadSafetyFeatures();
+  logger.info(
+    {
+      pauseNewTasks: safety.pauseNewTasks,
+      pauseNewBids: safety.pauseNewBids,
+      pauseWorkerConsumption: safety.pauseWorkerConsumption,
+      escrowImplementation: safety.escrowImplementation,
+      executorDenylistSize: safety.executorDenylist.size,
+      executorDenylistPreview: [...safety.executorDenylist].slice(0, 3),
+    },
+    'Safety features loaded',
+  );
+
   await checkStellarConnectivity();
 
   if (process.env.DATABASE_URL) {
@@ -152,6 +166,7 @@ async function main(): Promise<void> {
         maxAttempts: Number(process.env.WORKER_MAX_ATTEMPTS ?? 10),
         webhookUrl: process.env.RESULT_PUBLISHED_WEBHOOK_URL,
       },
+      safety,
     );
     await worker.start();
   }

@@ -5,22 +5,37 @@ import { createBidLocalSchema, createBidSignedSchema } from '../models/bidSchema
 import { Bid } from '../models/bid';
 import { TaskRepositoryLike } from '../repositories/taskRepository';
 import { BidRepositoryLike } from '../repositories/bidRepository';
-import { EscrowServiceLike } from '../services/escrowService';
+import { IProviderEscrow } from '../services/escrowService';
 import { ExecutorNotAllowedError, PolicyService } from '../services/policyService';
 import { parseUsdcDecimalToStroops } from '../utils/money';
 import { toBidDto } from '../presenters/bidPresenter';
 import { OutboxService } from '../services/outboxService';
+import { SafetyFeatures, loadSafetyFeatures } from '../config/safetyFeatures';
+import { logger } from '../config/logger';
 
 export class BidController {
+  private readonly safety: SafetyFeatures;
+
   constructor(
     private readonly taskRepository: TaskRepositoryLike,
-    private readonly escrowService: EscrowServiceLike,
+    private readonly escrowService: IProviderEscrow,
     private readonly bidRepository: BidRepositoryLike,
     private readonly policyService: PolicyService,
     private readonly outbox?: OutboxService,
-  ) {}
+    safetyFeatures?: SafetyFeatures,
+  ) {
+    this.safety = safetyFeatures ?? loadSafetyFeatures();
+  }
 
   create = async (req: Request, res: Response): Promise<void> => {
+    if (this.safety.pauseNewBids) {
+      res.status(503).json({
+        error: 'new bids are paused',
+        detail: 'Marketplace operators have temporarily disabled new bids. Retry later or check status page.',
+      });
+      return;
+    }
+
     let taskId: string;
     let executor: string;
     let amount: string;
@@ -53,6 +68,15 @@ export class BidController {
         return;
       }
       ({ taskId, executor, amount, collateral } = parsed.data);
+    }
+
+    if (this.safety.executorDenylist.has(executor)) {
+      logger.warn(
+        { executorPublicKey: executor, taskId, reason: 'denylist_hit', endpoint: 'POST /bids' },
+        'Denylist blocked bid from executor',
+      );
+      res.status(403).json({ error: 'executor is not allowed to bid' });
+      return;
     }
 
     const task = await this.taskRepository.findById(taskId);

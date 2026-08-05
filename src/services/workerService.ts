@@ -5,11 +5,12 @@ import { EventConsumer } from './eventConsumer';
 import { PgEventConsumptionRepository } from '../repositories/eventConsumptionRepository';
 import { PgTaskRepository } from '../repositories/taskRepository';
 import { PgBidRepository } from '../repositories/bidRepository';
-import { EscrowServiceLike } from './escrowService';
+import { IProviderEscrow } from './escrowService';
 import { OutboxService } from './outboxService';
 import { classifyWebhookError, WebhookService } from './webhookService';
 import { toTaskDto } from '../presenters/taskPresenter';
 import { logger } from '../config/logger';
+import { SafetyFeatures, loadSafetyFeatures } from '../config/safetyFeatures';
 import {
   tgOutboxFailed,
   tgOutboxUnprocessed,
@@ -41,18 +42,22 @@ export class WorkerService {
   private running = false;
   private lastBacklogSampleAt = 0;
   private pendingConsumerKeys = new Set<string>();
+  private readonly safety: SafetyFeatures;
 
   constructor(
     private readonly outbox: PgOutboxRepository,
     private readonly consumptions: PgEventConsumptionRepository,
     private readonly taskRepository: PgTaskRepository,
     private readonly bidRepository: PgBidRepository,
-    private readonly escrowService: EscrowServiceLike,
+    private readonly escrowService: IProviderEscrow,
     private readonly outboxService: OutboxService,
     private readonly webhookService: WebhookService,
     private readonly redis: RedisClientType,
     private readonly options: WorkerServiceOptions,
-  ) {}
+    safetyFeatures?: SafetyFeatures,
+  ) {
+    this.safety = safetyFeatures ?? loadSafetyFeatures();
+  }
 
   private computeBackoff(attempt: number): Date {
     const baseMs = 2000;
@@ -277,6 +282,17 @@ export class WorkerService {
     const tick = async () => {
       await maybeSampleBacklog();
       await publisher.publishOnce();
+
+      // Pause gate for outbox consumption (PAUSE_WORKER_CONSUMPTION feature flag):
+      // When enabled we STILL sample backlog metrics + publish DB rows → streams,
+      // but we never claim/poll/dispatch any event. This keeps observability
+      // working while operators debug a bad deploy, and no event is lost — the
+      // Redis Streams retains them and XAUTOCLAIM will pick them up on resume.
+      if (this.safety.pauseWorkerConsumption) {
+        tgWorkerTickTotal.inc({ status: 'paused' });
+        return;
+      }
+
       const claimed = await consumer.autoClaimOnce(30_000, async (entry) => {
         const eventId = String(entry.fields.id ?? '');
         const type = String(entry.fields.type ?? '');

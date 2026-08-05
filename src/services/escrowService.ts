@@ -45,10 +45,42 @@ interface TrustlessWorkClientLike {
   ): Promise<{ success: boolean; disputeId: string; status: string }>;
 }
 
-// TypeScript downlevels `import()` to `require()` under `module: "commonjs"`,
-// which breaks against a package with no "require" export condition. The
-// indirect call via `Function` hides the import from that static rewrite so
-// Node resolves it as a genuine dynamic ESM import at runtime.
+/**
+ * Wraps Trustless Work's escrow-as-a-service REST API to lock executor
+ * collateral for a bid. `@stellar-agent-kit/plugin-trustless-work` ships as
+ * pure ESM with no CJS export condition, so it's loaded via dynamic import()
+ * rather than a static import into this CommonJS project.
+ *
+ * Naming note: the ADR 0002 refers to this abstraction as `IProviderEscrow`.
+ * We keep the old name `EscrowServiceLike` exported too (alias) so existing
+ * call-sites don't break on a one-off rename. New code should use
+ * `IProviderEscrow`.
+ */
+export type IProviderEscrow = {
+  createEscrow(executorPublicKey: string, taskId: string, collateralAmount: number): Promise<string>;
+  releaseMilestone(escrowId: string): Promise<ReleaseResult>;
+  confiscate(
+    escrowId: string,
+    collateralAmount: number,
+    requesterSharePct?: number,
+  ): Promise<ConfiscateResult>;
+};
+
+/** @deprecated use IProviderEscrow. Kept for call-site compatibility. */
+export type EscrowServiceLike = IProviderEscrow;
+
+export interface CreateEscrowProviderInput {
+  implementation: 'trustlesswork' | 'mock';
+  network: 'local' | 'testnet' | 'pubnet';
+  envOverrides?: Partial<{
+    TRUSTLESS_WORK_API_KEY: string;
+    USDC_ISSUER: string;
+    MARKETPLACE_WALLET: string;
+  }>;
+  injectedClient?: TrustlessWorkClientLike;
+  injectedMock?: IProviderEscrow;
+}
+
 const dynamicImport = new Function('specifier', 'return import(specifier)') as (
   specifier: string,
 ) => Promise<{ TrustlessWorkClient: unknown }>;
@@ -61,22 +93,47 @@ async function loadTrustlessWorkClient(): Promise<
 }
 
 /**
- * Wraps Trustless Work's escrow-as-a-service REST API to lock executor
- * collateral for a bid. `@stellar-agent-kit/plugin-trustless-work` ships as
- * pure ESM with no CJS export condition, so it's loaded via dynamic import()
- * rather than a static import into this CommonJS project.
+ * Factory for the currently selected escrow implementation. Reads
+ * `ESCROW_IMPLEMENTATION` by default; callers (e.g. tests) can force the
+ * implementation via `input.implementation`. Returns `MockEscrowService` from
+ * `./mockExternalServices` if `implementation === 'mock'` or `implementation
+ * === 'trustlesswork'` but MOCK_EXTERNALS=true on a local network.
  */
-export interface EscrowServiceLike {
-  createEscrow(executorPublicKey: string, taskId: string, collateralAmount: number): Promise<string>;
-  releaseMilestone(escrowId: string): Promise<ReleaseResult>;
-  confiscate(
-    escrowId: string,
-    collateralAmount: number,
-    requesterSharePct?: number,
-  ): Promise<ConfiscateResult>;
+export async function createEscrowProvider(input: CreateEscrowProviderInput): Promise<IProviderEscrow> {
+  if (input.injectedMock) return input.injectedMock;
+  if (input.implementation === 'mock') {
+    const { MockEscrowService } = await import('./mockExternalServices');
+    return new MockEscrowService();
+  }
+  // implementation === 'trustlesswork'
+  if (input.injectedClient) {
+    const env = input.envOverrides ?? {};
+    return new EscrowService(
+      {
+        apiKey: env.TRUSTLESS_WORK_API_KEY ?? '__injected_client__',
+        network: input.network === 'pubnet' ? 'mainnet' : 'testnet',
+        marketplaceWallet: env.MARKETPLACE_WALLET ?? '',
+        usdcIssuer: env.USDC_ISSUER ?? '',
+      },
+      input.injectedClient,
+    );
+  }
+  const env = input.envOverrides ?? process.env;
+  const apiKey = env.TRUSTLESS_WORK_API_KEY;
+  if (!apiKey) throw new Error('TRUSTLESS_WORK_API_KEY is not set');
+  const usdcIssuer = env.USDC_ISSUER;
+  if (!usdcIssuer) throw new Error('USDC_ISSUER is not set');
+  const marketplaceWallet = env.MARKETPLACE_WALLET;
+  if (!marketplaceWallet) throw new Error('MARKETPLACE_WALLET is not set');
+  return new EscrowService({
+    apiKey,
+    network: input.network === 'pubnet' ? 'mainnet' : 'testnet',
+    marketplaceWallet,
+    usdcIssuer,
+  });
 }
 
-export class EscrowService implements EscrowServiceLike {
+export class EscrowService implements IProviderEscrow {
   private clientPromise?: Promise<TrustlessWorkClientLike>;
 
   constructor(

@@ -12,7 +12,6 @@ import { TaskRepositoryLike } from '../repositories/taskRepository';
 import { BidRepositoryLike } from '../repositories/bidRepository';
 import { InsufficientBalanceError, MppChargeServiceLike } from '../services/mppChargeService';
 import { TaskFeedService } from '../services/taskFeedService';
-import { EscrowServiceLike } from '../services/escrowService';
 import {
   AuctionService,
   NoBidsError,
@@ -24,17 +23,24 @@ import { toTaskDto } from '../presenters/taskPresenter';
 import { toBidDto } from '../presenters/bidPresenter';
 import { OutboxService } from '../services/outboxService';
 import { logger } from '../config/logger';
+import { SafetyFeatures, loadSafetyFeatures } from '../config/safetyFeatures';
+import { IProviderEscrow } from '../services/escrowService';
 
 export class TaskController {
+  private readonly safety: SafetyFeatures;
+
   constructor(
     private readonly mppChargeService: MppChargeServiceLike,
     private readonly taskRepository: TaskRepositoryLike,
     private readonly taskFeedService: TaskFeedService,
     private readonly auctionService: AuctionService,
-    private readonly escrowService: EscrowServiceLike,
+    private readonly escrowService: IProviderEscrow,
     private readonly bidRepository: BidRepositoryLike,
     private readonly outbox?: OutboxService,
-  ) {}
+    safetyFeatures?: SafetyFeatures,
+  ) {
+    this.safety = safetyFeatures ?? loadSafetyFeatures();
+  }
 
   private async saveAndPublish(
     requesterPublicKey: string,
@@ -75,6 +81,14 @@ export class TaskController {
    * `createPaid` for the real MPP Charge protocol path used on testnet/pubnet.
    */
   create = async (req: Request, res: Response): Promise<void> => {
+    if (this.safety.pauseNewTasks) {
+      res.status(503).json({
+        error: 'new tasks are paused',
+        detail: 'Marketplace operators have temporarily disabled new task creation. Retry later or check status page.',
+      });
+      return;
+    }
+
     const parsed = createTaskLocalRequestSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: 'invalid request', detail: parsed.error.flatten() });
@@ -125,6 +139,14 @@ export class TaskController {
    * secret is ever sent by the client.
    */
   createPaid = async (req: Request, res: Response): Promise<void> => {
+    if (this.safety.pauseNewTasks) {
+      res.status(503).json({
+        error: 'new tasks are paused',
+        detail: 'Marketplace operators have temporarily disabled new task creation. Retry later or check status page.',
+      });
+      return;
+    }
+
     const parsed = createTaskSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: 'invalid request', detail: parsed.error.flatten() });
@@ -229,6 +251,22 @@ export class TaskController {
     );
     if (!winningBid) {
       res.status(409).json({ error: 'no selected bid found for this task' });
+      return;
+    }
+
+    if (this.safety.executorDenylist.has(winningBid.executorPublicKey)) {
+      logger.warn(
+        {
+          taskId,
+          executorPublicKey: winningBid.executorPublicKey,
+          reason: 'denylist_hit',
+          endpoint: 'POST /tasks/:id/complete',
+        },
+        'Denylist blocked task completion for executor',
+      );
+      res
+        .status(403)
+        .json({ error: 'cannot complete task — executor is not allowed to release milestone' });
       return;
     }
 

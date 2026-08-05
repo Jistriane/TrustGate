@@ -3,6 +3,13 @@
 ## Status
 - Aceito
 - Data: 2026-08-05
+- Implementação (2026-08-05 update): **3/6 pilares codados em src/ (P1.8A MVP Pubnet)**
+  - ✅ Pausas off-chain de emergência: `PAUSE_NEW_TASKS`, `PAUSE_NEW_BIDS`, `PAUSE_WORKER_CONSUMPTION` (3 env vars parseadas em `src/config/safetyFeatures.ts`)
+  - ✅ Allowlist/Denylist off-chain executores: `EXECUTOR_DENYLIST` (CSV Stellar G…, validado com regex `^G[A-Z2-7]{55}$`, aplicado em `BidController.create` + `TaskController.complete`)
+  - ✅ Abstração `IProviderEscrow` + factory `createEscrowProvider()` + `ESCROW_IMPLEMENTATION=trustlesswork|mock` (antes tipo chamado `EscrowServiceLike`; mantemos alias deprecated para retrocompatibilidade)
+  - ⏳ Chave pública de verificação webhook SaaS Escrow: `TRUSTLESS_WORK_WEBHOOK_PUBLIC_KEY` + middleware verify (pendente P2 — nenhum endpoint de incoming dispute webhook existe hoje)
+  - ⏳ Leitura dual registry blue-green (v1 + v2 ao mesmo tempo por 7 dias): pendente até existir v2 para migrar
+  - ⏳ Nosso próprio contrato escrow WASM (fallback exit 15 dias): blueprint documentado, nenhum contrato `contracts/escrow/src/lib.rs` existe ainda
 
 ## Contexto
 - O TrustGate interage com a blockchain Stellar (Soroban + Classic + MPP) em dois pontos centrais que requerem compromisso entre simplicidade, segurança e capacidade de evolução:

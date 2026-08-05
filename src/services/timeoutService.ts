@@ -1,7 +1,7 @@
 import cron, { ScheduledTask } from 'node-cron';
 import { TaskRepositoryLike } from '../repositories/taskRepository';
 import { BidRepositoryLike } from '../repositories/bidRepository';
-import { EscrowServiceLike } from './escrowService';
+import { IProviderEscrow } from './escrowService';
 import { formatUsdcStroopsToDecimal } from '../utils/money';
 import { OutboxService } from './outboxService';
 import { logger } from '../config/logger';
@@ -19,7 +19,7 @@ export class TimeoutService {
   constructor(
     private readonly taskRepository: TaskRepositoryLike,
     private readonly bidRepository: BidRepositoryLike,
-    private readonly escrowService: EscrowServiceLike,
+    private readonly escrowService: IProviderEscrow,
     private readonly outbox?: OutboxService,
   ) {}
 

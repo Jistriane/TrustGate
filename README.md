@@ -325,6 +325,12 @@ a ready-made testnet config lives in [.env.testnet](file:///home/jistriane/Trust
 | `WEBHOOK_MAX_RETRIES` | | `3` | Number of retries inside a single worker tick postJson call (>= 0, integer). Default `3` = up to 4 total HTTP attempts per event (1 + 3 retries). Qualifying retryable errors: 5xx, 429, 408, network throw (ECONNRESET/DNS/ETIMEDOUT/AbortError). Non-retryable (fail-fast): 400/401/403/404/410. 429/503 `Retry-After: N` integer header overrides the computed backoff when longer. |
 | `WEBHOOK_BASE_BACKOFF_MS` | | `1000` | Base backoff (ms, >= 50) for the first retry; subsequent retries double exponentially ±50% "Full Jitter" AWS pattern (1s → ~0.5–1.5s → ~1–3s → ~2–6s for default 3 retries). |
 | `RESULT_PUBLISHED_WEBHOOK_URL` | | — | Optional URL called with POST JSON when an executor publishes a result. |
+| **Safety features — incident response (P1.8A MVP)** | | | |
+| `ESCROW_IMPLEMENTATION` | | `trustlesswork` | Selects the bid-collateral provider. Allowed: `trustlesswork` (SaaS via `@stellar-agent-kit/plugin-trustless-work`), `mock` (in-memory stub for CI/unit tests). Enables 15-day exit-strategy toggle from ADR 0002 with zero code changes (swap env var + rolling restart). |
+| `PAUSE_NEW_TASKS` | | `false` | When `true`, returns 503 on `POST /tasks` (local dev path) and `POST /tasks/paid` (MPP gate path) — inflight ASSIGNED/COMPLETING tasks still complete normally. |
+| `PAUSE_NEW_BIDS` | | `false` | When `true`, returns 503 on `POST /bids` for any task (doesn't touch task lifecycle). |
+| `PAUSE_WORKER_CONSUMPTION` | | `false` | When `true`, the outbox worker keeps sampling backlog metrics and publishing DB rows → Redis Streams, but **never claims/polls/dispatches any event** (no milestone release, no webhook, no retries). Safe P0 "press stop before deploying patch" toggle. XAUTOCLAIM resumes automatically on toggle off with zero data loss. Increments `tg_worker_tick_total{status="paused"}` each tick. |
+| `EXECUTOR_DENYLIST` | | (empty) | Comma-separated Stellar `G...` addresses. Blocks executors on two surfaces: (1) `POST /bids` (403, before escrow collateral lock) and (2) `POST /tasks/:id/complete` (403, before milestone release for their winning bid). Each hit is logged as structured `warn` with `executorPublicKey`, `taskId`, `reason="denylist_hit"`, `endpoint`. |
 | **Smart accounts (scripts only)** | | | |
 | `ACCOUNT_WASM_HASH` | (scripts only) | | WASM hash of a deployed OpenZeppelin smart account (see [Known limitations](#known-limitations)). |
 | `REQUESTER_SECRET` | (scripts only) | | Requester key used by `deploy-smart-account.ts`. |
@@ -356,6 +362,26 @@ Tests that need real infrastructure (a live local Stellar Quickstart, a real
 Trustless Work key, a real OZ Channels key) are gated with `describe.skip`
 and skip cleanly when that infrastructure isn't present — they aren't flaky,
 they're honest about what they need.
+
+### Live external tests (skipped by default)
+
+As of the current version, `npm test` reports **11 skipped tests across 2
+suites** (≈9% of the suite). 100% of the skips are gated by the presence of
+real external credentials or running services — **no internal logic is
+skipped**. Internal logic coverage (mock-based) is 111 tests / 31 suites.
+
+| # | Skipped test suite | What it exercises | Prerequisites to enable | Notes |
+|---|---|---|---|---|
+| 1 | `src/integration/sorobanRegistry.test.ts` | `registerExecutor()` + `listExecutors()` + `isExecutorRegistered()` calls to a **live deployed Soroban Registry contract** on Stellar testnet/standalone. | 1. Running Stellar Quickstart node (Soroban RPC). 2. `REGISTRY_CONTRACT_ID` env var pointing to a deployed Registry. 3. Admin keypair with XLM for gas. | If you want to re-enable: edit the file, change `describe.skip` → `describe`, set `MOCK_EXTERNALS=false`, and ensure the RPC is reachable. |
+| 2 | `src/integration/trustlessWorkEscrow.test.ts` | End-to-end escrow operations (confiscate/release collateral, milestone triggers) against the **live Trustless Work SaaS API**. | 1. `TRUSTLESS_WORK_API_KEY` env var set and valid. 2. Network egress to `blocks.trustlesswork.com`. 3. `MOCK_EXTERNALS=false`. | See [Escrow strategy](#escrow-provider-strategy) for SaaS vs self-hosted trade-offs. |
+| 3 | `src/integration/stellarSacWithdraw.test.ts` | USDC SAC token mint/transfer/withdraw via a live Stellar asset contract. | 1. Running RPC node. 2. `USDC_ASSET_CONTRACT_ID` env var. 3. Funded test keypair with XLM + USDC. | Mostly used for testnet debugging. |
+| 4 | `src/integration/ozChannelsFacilitator.test.ts` | OZ Channels facilitator payout path with a live facilitator key. | 1. `OZ_API_KEY` env var set. 2. Network egress to OpenZeppelin Channels API. 3. `MOCK_EXTERNALS=false`. | Skip in CI unless you have a stage facilitator key. |
+
+> **CI-safe default**: leave all skips as-is. The baseline (Section 8) already
+> covers the signed-request + metrics + observability surface, and the 111
+> internal tests cover every business logic path with mocks. Run the live
+> suites manually in staging before a mainnet deploy, with an operator
+> reviewing credentials.
 
 ## Docker (full stack)
 
@@ -734,7 +760,28 @@ bash scripts/observability-baseline.sh
 
 # Keep the compose stack alive after success, for manual exploration:
 bash scripts/observability-baseline.sh --keep
+
+# Show CLI help:
+scripts/observability-baseline.sh --help
 ```
+
+### CLI reference
+
+| Flag            | Purpose                                                                                                                                       |
+|-----------------|-----------------------------------------------------------------------------------------------------------------------------------------------|
+| (no flags)      | Default: 6/6 phases → teardown on `EXIT/ERR/INT/TERM`. Used by CI.                                                                            |
+| `--keep`        | Skip teardown on successful exit. The Docker compose project keeps running so you can explore Prom/Grafana/App UIs manually or attach a debugger. Stacks still tear down on `ERR/INT/TERM`. |
+| `-h`, `--help`  | Print usage + env-variable overrides and exit `0`.                                                                                            |
+| unknown flag    | Print usage to stderr and exit `2` (non-zero, CI-blocking).                                                                                   |
+
+Optional env overrides (shown in `--help`):
+
+| Variable       | Default value               | Purpose                                  |
+|----------------|-----------------------------|------------------------------------------|
+| `APP_URL`      | `http://127.0.0.1:3000`     | Health + `/metrics` endpoint for the app |
+| `PROM_URL`     | `http://127.0.0.1:9090`     | Prometheus API base URL                  |
+| `GRAFANA_URL`  | `http://127.0.0.1:3001`     | Grafana API base URL                     |
+| `COMPOSE_FILE` | `compose/observability/docker-compose.yml` | Docker compose manifest to spin up |
 
 ### Optional: signed-request + metrics self-test (no full Docker stack)
 

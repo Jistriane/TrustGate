@@ -17,7 +17,8 @@ import { PolicyService } from './services/policyService';
 import { calculateListingFeeStroops } from './services/listingFee';
 import { createTaskSchema } from './models/taskSchema';
 import { createListingFeeGateFactory } from './config/mppCharge';
-import { EscrowService, EscrowServiceLike } from './services/escrowService';
+import { EscrowService, IProviderEscrow } from './services/escrowService';
+import { loadSafetyFeatures, SafetyFeatures } from './config/safetyFeatures';
 import { AuctionService } from './services/auctionService';
 import { TimeoutService } from './services/timeoutService';
 import { InMemoryExecutorRepository, PgExecutorRepository } from './repositories/executorRepository';
@@ -53,16 +54,19 @@ export interface AppOverrides {
   /** Swap the real USDC SAC charge integration for a fake — e2e/mocked tests. */
   mppChargeService?: MppChargeServiceLike;
   /** Swap the real Trustless Work integration for a fake — e2e/mocked tests. */
-  escrowService?: EscrowServiceLike;
+  escrowService?: IProviderEscrow;
   /** Swap the real MPP Charge gate (testnet/pubnet listing-fee path) for a fake — tests. */
   listingFeeGateFactory?: (amount: string, description: string) => Promise<RequestHandler>;
   /** Inject a fake x402 payment middleware for the executor result endpoint in tests. */
   resultPaymentGate?: RequestHandler;
+  /** Override pause/denylist safety features — tests. */
+  safetyFeatures?: SafetyFeatures;
 }
 
 export function createApp(overrides: AppOverrides = {}): Express {
   const config = loadStellarConfig();
   const mockExternals = shouldMockExternals() && config.network === 'local';
+  const safety = overrides.safetyFeatures ?? loadSafetyFeatures();
 
   const marketplaceWallet =
     process.env.MARKETPLACE_WALLET ??
@@ -134,7 +138,7 @@ export function createApp(overrides: AppOverrides = {}): Express {
     }
   }
 
-  let escrowService: EscrowServiceLike;
+  let escrowService: IProviderEscrow;
   if (overrides.escrowService) {
     escrowService = overrides.escrowService;
   } else if (mockExternals) {
@@ -164,8 +168,16 @@ export function createApp(overrides: AppOverrides = {}): Express {
     escrowService,
     bidRepository,
     outboxService,
+    safety,
   );
-  const bidController = new BidController(taskRepository, escrowService, bidRepository, policyService, outboxService);
+  const bidController = new BidController(
+    taskRepository,
+    escrowService,
+    bidRepository,
+    policyService,
+    outboxService,
+    safety,
+  );
   const timeoutService = new TimeoutService(taskRepository, bidRepository, escrowService, outboxService);
 
   const app = express();
