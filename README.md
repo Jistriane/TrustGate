@@ -238,6 +238,14 @@ Notes:
 
 To validate Freighter signing against a running local stack, use the built-in smoke route:
 
+Freighter quick checklist:
+
+- Install the Freighter browser extension and create/import an account.
+- Ensure Freighter is unlocked and the expected account is active.
+- Allow the dApp's origin in Freighter (connect the site when prompted).
+- If the kit's modal/button is used, confirm you selected Freighter and not another wallet.
+- If you run the API via Docker, your dApp must call the host URL (for example `http://localhost:3000`), not the in-compose hostname.
+
 1) Start Docker (local network + mocks recommended):
 
 ```bash
