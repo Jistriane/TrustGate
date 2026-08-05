@@ -249,6 +249,65 @@ docker compose up --build -d
 - `POST /auth/nonce` to get `{ timestamp, nonce }`
 - `POST /auth/signed-smoke` with the signature headers and a body like `{ publicKey: "...", hello: "world" }`
 
+Copy/paste example (TypeScript):
+
+```ts
+import { StellarWalletsKit, WalletNetwork, allowAllModules, FREIGHTER_ID } from '@creit.tech/stellar-wallets-kit';
+import { Networks } from '@stellar/stellar-sdk';
+
+const API_BASE_URL = 'http://localhost:3000';
+
+const kit = new StellarWalletsKit({
+  network: WalletNetwork.TESTNET,
+  selectedWalletId: FREIGHTER_ID,
+  modules: allowAllModules(),
+});
+
+async function sha256Hex(text: string): Promise<string> {
+  const bytes = new TextEncoder().encode(text);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+export async function validateSignedSmoke(): Promise<void> {
+  const { address: publicKey } = await kit.getAddress();
+
+  const nonceRes = await fetch(`${API_BASE_URL}/auth/nonce`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ publicKey }),
+  });
+  if (!nonceRes.ok) throw new Error(`nonce failed: ${nonceRes.status} ${await nonceRes.text()}`);
+  const { timestamp, nonce } = (await nonceRes.json()) as { timestamp: number; nonce: string };
+
+  const body = { publicKey, hello: 'world' };
+  const bodyText = JSON.stringify(body);
+  const bodyHash = await sha256Hex(bodyText);
+
+  const canonical = `POST\n/auth/signed-smoke\n${String(timestamp)}\n${nonce}\n${bodyHash}`;
+  const { signedMessage } = await kit.signMessage(canonical, {
+    address: publicKey,
+    networkPassphrase: Networks.TESTNET,
+  });
+
+  const res = await fetch(`${API_BASE_URL}/auth/signed-smoke`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-tg-public-key': publicKey,
+      'x-tg-timestamp': String(timestamp),
+      'x-tg-nonce': nonce,
+      'x-tg-signature': signedMessage,
+    },
+    body: bodyText,
+  });
+
+  const text = await res.text();
+  if (!res.ok) throw new Error(`smoke failed: ${res.status} ${text}`);
+  console.log('smoke ok:', text);
+}
+```
+
 Expected response:
 
 ```json
