@@ -314,6 +314,19 @@ Expected response:
 { "ok": true, "publicKey": "G..." }
 ```
 
+### Troubleshooting (Freighter / signed requests)
+
+- **401 `missing signature headers`**: ensure you are sending all headers: `x-tg-public-key`, `x-tg-timestamp`, `x-tg-nonce`, `x-tg-signature`.
+- **401 `timestamp outside allowed window`**: call `POST /auth/nonce` immediately before the signed request and reuse the returned `timestamp`.
+- **401 `invalid nonce`**: server nonces are one-time. Never reuse the same `{ nonce, timestamp }` for a second request; fetch a new nonce.
+- **401 `public key mismatch for <field>`**: the body field (e.g. `publicKey` / `executorPublicKey`) must equal `x-tg-public-key`.
+- **401 `invalid signature`**: confirm the canonical string is exactly:
+  - `${METHOD}\\n${PATH}\\n${TIMESTAMP}\\n${NONCE}\\n${SHA256_HEX(bodyText)}`
+  - `PATH` must exclude query string and match the route exactly (e.g. `/auth/signed-smoke`).
+  - `bodyText` must be the exact JSON string you send in `fetch` (same spacing/order).
+- **429 `rate limit exceeded`**: too many failed auth attempts (IP/public key). Wait a minute and retry, or fix the canonical/payload first.
+- **CORS / preflight issues**: ensure the browser can send custom headers. If you deploy behind a proxy, verify CORS config allows `x-tg-*` headers.
+
 ## Example: full lifecycle via curl
 
 ```bash
