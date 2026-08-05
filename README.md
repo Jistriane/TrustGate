@@ -23,6 +23,7 @@ escrow), **MPP**/**x402** (pay-per-result access), and the **Stellar SDK**.
 - [Testing](#testing)
 - [Docker](#docker-full-stack)
 - [Testnet deployment](#running-against-real-stellar-testnet)
+- [Signed requests (dApp)](#signed-requests-dapp)
 - [API walkthrough](#example-full-lifecycle-via-curl)
 - [Known limitations](#known-limitations)
 
@@ -134,6 +135,104 @@ npm run testnet:deploy-registry  # deploys the Registry contract to testnet
 The one step that can't be scripted: fund the requester with real (fictitious) testnet
 USDC via the [Circle faucet](https://faucet.circle.com) — it's a captcha-gated web form.
 The setup script prints the exact address to paste in.
+
+## Signed requests (dApp)
+
+On testnet/pubnet, endpoints that mutate state never accept secret keys (S...). Instead,
+the caller proves ownership of a Stellar account by signing a canonical payload and
+sending it in request headers.
+
+This project recommends server-issued one-time nonces via `POST /auth/nonce` and signing
+via Stellar Wallets Kit.
+
+### Install (React/Next.js)
+
+```bash
+npm i @creit.tech/stellar-wallets-kit @stellar/stellar-sdk
+```
+
+### Snippet
+
+```ts
+import { StellarWalletsKit, WalletNetwork, allowAllModules, FREIGHTER_ID } from '@creit.tech/stellar-wallets-kit';
+import { Networks } from '@stellar/stellar-sdk';
+
+const API_BASE_URL = 'http://localhost:3000';
+
+const kit = new StellarWalletsKit({
+  network: WalletNetwork.TESTNET,
+  selectedWalletId: FREIGHTER_ID,
+  modules: allowAllModules(),
+});
+
+async function sha256Hex(text: string): Promise<string> {
+  const bytes = new TextEncoder().encode(text);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function tgSignedFetch<TResponse>(
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
+  path: string,
+  body: unknown,
+  options: { idempotencyKey?: string } = {},
+): Promise<TResponse> {
+  const { address: publicKey } = await kit.getAddress();
+
+  const nonceRes = await fetch(`${API_BASE_URL}/auth/nonce`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ publicKey }),
+  });
+  if (!nonceRes.ok) {
+    throw new Error(`nonce failed: ${nonceRes.status}`);
+  }
+  const { timestamp, nonce } = (await nonceRes.json()) as { timestamp: number; nonce: string };
+
+  const bodyText = JSON.stringify(body ?? {});
+  const bodyHash = await sha256Hex(bodyText);
+
+  const canonical = `${method}\n${path}\n${String(timestamp)}\n${nonce}\n${bodyHash}`;
+  const { signedMessage } = await kit.signMessage(canonical, {
+    address: publicKey,
+    networkPassphrase: Networks.TESTNET,
+  });
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'x-tg-public-key': publicKey,
+    'x-tg-timestamp': String(timestamp),
+    'x-tg-nonce': nonce,
+    'x-tg-signature': signedMessage,
+  };
+  if (options.idempotencyKey) {
+    headers['Idempotency-Key'] = options.idempotencyKey;
+  }
+
+  const res = await fetch(`${API_BASE_URL}${path}`, {
+    method,
+    headers,
+    body: method === 'GET' ? undefined : bodyText,
+  });
+  if (!res.ok) {
+    throw new Error(`request failed: ${res.status} ${await res.text()}`);
+  }
+  return (await res.json()) as TResponse;
+}
+
+async function exampleRegisterExecutor(): Promise<void> {
+  await tgSignedFetch('POST', '/executors/register', { publicKey: 'G...', metadataUri: 'https://example.com/meta.json' }, {
+    idempotencyKey: crypto.randomUUID(),
+  });
+}
+```
+
+Notes:
+
+- The signed `path` must match the server route exactly and exclude query strings (for example, `/tasks/123/complete`).
+- For endpoints that mutate state, `Idempotency-Key` is required.
+- The request body hash is computed from the exact JSON string sent over the wire. Always use the same `bodyText` for hashing and `fetch`.
+- If you want users to pick another wallet, initialize the kit with a different `*_ID` or use the kit's built-in modal and call `kit.setWallet(...)` before `getAddress()`.
 
 ## Example: full lifecycle via curl
 
