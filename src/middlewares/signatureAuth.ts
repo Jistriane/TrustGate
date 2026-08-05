@@ -2,6 +2,12 @@ import { NextFunction, Request, Response } from 'express';
 import { Keypair } from '@stellar/stellar-sdk';
 import { createHash } from 'crypto';
 import { getRedisClient } from '../config/redis';
+import { logger } from '../config/logger';
+import {
+  tgAuthSignatureFailuresTotal,
+  tgAuthSignatureLatencyMs,
+  tgAuthSignatureRequestsTotal,
+} from '../config/authMetrics';
 
 export interface SignatureAuthOptions {
   required?: boolean;
@@ -30,6 +36,12 @@ function getClientIp(req: Request): string {
   return String(ip ?? '');
 }
 
+function getRouteLabel(req: Request): string {
+  const route = (req as unknown as { route?: { path?: unknown } }).route;
+  if (route && typeof route.path === 'string') return route.path;
+  return 'unknown';
+}
+
 async function incrWithTtl(
   redis: Awaited<ReturnType<typeof getRedisClient>>,
   key: string,
@@ -53,6 +65,20 @@ export function signatureAuth(options: SignatureAuthOptions = {}) {
       return;
     }
 
+    const start = process.hrtime.bigint();
+    const route = getRouteLabel(req);
+    const record = (status: number, failureReason?: string): void => {
+      const ms = Number(process.hrtime.bigint() - start) / 1e6;
+      tgAuthSignatureRequestsTotal.inc({ status: String(status), route });
+      tgAuthSignatureLatencyMs.observe({ status: String(status), route }, ms);
+      if (failureReason) {
+        tgAuthSignatureFailuresTotal.inc({ reason: failureReason, route });
+        if (!process.env.JEST_WORKER_ID) {
+          logger.warn({ route, status, reason: failureReason }, 'signature auth failed');
+        }
+      }
+    };
+
     const publicKey = String(req.header('x-tg-public-key') ?? '');
     const timestampStr = String(req.header('x-tg-timestamp') ?? '');
     const nonce = String(req.header('x-tg-nonce') ?? '');
@@ -60,6 +86,8 @@ export function signatureAuth(options: SignatureAuthOptions = {}) {
     const ip = getClientIp(req);
 
     const fail = async (error: string): Promise<void> => {
+      let finalStatus = 401;
+      let reason = error;
       try {
         const redis = await getRedisClient();
         const ttlSeconds = 60;
@@ -69,13 +97,17 @@ export function signatureAuth(options: SignatureAuthOptions = {}) {
           : 0;
 
         if (ipCount > 30 || pkCount > 10) {
+          finalStatus = 429;
+          reason = 'rate limit exceeded';
           res.status(429).json({ error: 'rate limit exceeded' });
+          record(finalStatus, reason);
           return;
         }
       } catch (err) {
         void err;
       }
 
+      record(finalStatus, reason);
       res.status(401).json({ error });
     };
 
@@ -139,6 +171,7 @@ export function signatureAuth(options: SignatureAuthOptions = {}) {
     try {
       redis = await getRedisClient();
     } catch {
+      record(503, 'nonce store unavailable');
       res.status(503).json({ error: 'nonce store unavailable' });
       return;
     }
@@ -163,6 +196,7 @@ export function signatureAuth(options: SignatureAuthOptions = {}) {
     }
 
     (req as unknown as { authPublicKey?: string }).authPublicKey = publicKey;
+    record(200);
     next();
   };
 }
