@@ -203,3 +203,89 @@ These are initial, conservative thresholds to reduce MTTR and catch regressions 
 - **Suggested alert**:
   - Warning: > 0 for 10m
   - Critical: > 10 for 10m
+
+### Incident runbook (P0/P1)
+
+This section is a high-signal operational playbook. It is intentionally short and action-oriented.
+
+#### P0: Redis down / degraded
+
+**Detection**
+
+- `/health/detailed` reports Redis down, or Prometheus alerts fire:
+  - `/auth/nonce` 5xx ratio / latency spike
+  - outbox publish failures
+  - worker tick errors
+
+**Impact**
+
+- Signed requests may fail (nonce issuance + nonce consumption).
+- Worker may fail to publish/consume outbox events.
+
+**Immediate actions**
+
+1) Confirm the failure scope:
+   - Check Redis container/service status.
+   - Check network connectivity from app to Redis.
+2) Mitigate:
+   - Restart Redis if it is unhealthy (prefer rolling restart in production).
+   - If Redis is OOM/evicting keys, increase memory or adjust eviction policy.
+3) Validate recovery:
+   - `/health/detailed` returns `redis: up`.
+   - `tg_auth_nonce_requests_total{status="200"}` resumes and latency drops.
+   - `tg_outbox_publish_events_total{result="failed"}` stops increasing.
+
+**Aftercare**
+
+- Confirm no drift in worker behavior (tick latency/backlog).
+- If Redis outage was prolonged, expect some client retries; watch 401/429 spikes.
+
+#### P0: Worker stuck / not ticking
+
+**Detection**
+
+- Alert: no successful ticks for 2m, or tick p95 latency > 10s.
+
+**Impact**
+
+- Outbox delivery and async completion may be delayed:
+  - task escrow releases may be delayed (tasks can remain `COMPLETING` longer).
+  - webhooks may be delayed.
+
+**Immediate actions**
+
+1) Confirm process health:
+   - Check worker logs for `[Worker] tick failed`.
+   - Verify DB and Redis are reachable.
+2) Mitigate:
+   - Restart the worker process (safe due to idempotency via `event_consumptions`).
+   - If the worker is CPU-starved, increase CPU or reduce `publishIntervalMs`.
+3) Validate recovery:
+   - `tg_worker_tick_total{status="success"}` increases again.
+   - Dispatch failures stop increasing.
+
+**Aftercare**
+
+- Monitor due retries (`tg_worker_due_retries`) for persistent failures.
+- If failures are only `result_published`, validate webhook endpoint availability.
+
+#### P1: Spike in 401 (signed auth) after client rollout
+
+**Detection**
+
+- Spike in `tg_auth_signature_requests_total{status="401"}` (by route), often with top reasons:
+  - `invalid signature`, `invalid nonce`, `timestamp outside allowed window`
+
+**Immediate actions**
+
+1) Identify the impacted route(s) and top failure reasons:
+   - `topk(10, sum(rate(tg_auth_signature_failures_total[5m])) by (reason, route))`
+2) Validate the client contract:
+   - Nonce is one-time and fetched per request.
+   - Canonical payload includes the exact `PATH` (no query string).
+   - Body hash uses the exact JSON string sent in `fetch`.
+
+**Mitigation**
+
+- Roll back the client release if most traffic is failing.
+- If abuse is suspected, apply WAF/rate limits at the edge.
