@@ -1,60 +1,59 @@
-# ADR 0001: Outbox + Worker idempotente (Redis Streams) e conclusão assíncrona com Trustless Work
+# ADR 0001: Outbox + idempotent Worker (Redis Streams) and asynchronous completion with Trustless Work
 
 ## Status
-- Aceito
-- Data: 2026-08-04
+- Accepted
+- Date: 2026-08-04
 
-## Contexto
-- O TrustGate executa ações externas (ex.: Trustless Work escrow, webhooks, pagamentos) que não podem ficar acopladas ao ciclo síncrono de request/response sem aumentar risco de timeouts, retries duplicados e inconsistências.
-- Precisamos tolerar falhas transitórias (rede, dependências externas) e, ao mesmo tempo, garantir que efeitos de negócio sejam executados de forma controlada.
-- O sistema já usa Postgres para persistência e Redis para fila/streams.
+## Context
+- TrustGate performs external actions (e.g. Trustless Work escrow, webhooks, payments) that cannot stay coupled to the synchronous request/response cycle without increasing the risk of timeouts, duplicate retries and inconsistencies.
+- We need to tolerate transient failures (network, external dependencies) while still guaranteeing that business effects are executed in a controlled way.
+- The system already uses Postgres for persistence and Redis for queueing/streams.
 
-## Decisão
-- Adotar o padrão **Outbox** no Postgres:
-  - A API grava um registro em `outbox_events` como parte do fluxo de escrita principal.
-  - Um publisher publica esses eventos em **Redis Streams** e marca `processed_at` no Postgres.
-- Consumir Redis Streams via **consumer group** e processar eventos em um **Worker** separado do servidor HTTP.
-- Garantia de entrega: **at-least-once**, com **idempotência por handler** persistida no Postgres:
-  - Registrar consumo em `event_consumptions` com chave única `(handler_name, event_id)`.
-  - Em reprocessamentos/duplicações, o handler retorna sem reexecutar efeitos.
-- Mover efeitos externos sensíveis para o worker:
-  - Em especial, o fluxo “`POST /tasks/:id/complete` → release do escrow (Trustless Work)” passa a ser assíncrono quando Outbox está habilitado:
-    - API muda a task para `COMPLETING` e emite `task_completion_requested`.
-    - Worker executa `releaseMilestone`, marca task `COMPLETED` e emite `task_completed`.
-  - Sem Outbox (modo local/in-memory), manter fallback síncrono para facilitar dev e testes.
+## Decision
+- Adopt the **Outbox** pattern in Postgres:
+  - The API writes a record into `outbox_events` as part of the main write flow.
+  - A publisher publishes those events to **Redis Streams** and marks `processed_at` in Postgres.
+- Consume Redis Streams via a **consumer group** and process events in a **Worker** separate from the HTTP server.
+- Delivery guarantee: **at-least-once**, with **per-handler idempotency** persisted in Postgres:
+  - Record consumption in `event_consumptions` with the unique key `(handler_name, event_id)`.
+  - On reprocessing/duplication, the handler returns without re-executing effects.
+- Move sensitive external effects to the worker:
+  - In particular, the "`POST /tasks/:id/complete` → escrow release (Trustless Work)" flow becomes asynchronous when Outbox is enabled:
+    - The API moves the task to `COMPLETING` and emits `task_completion_requested`.
+    - The Worker runs `releaseMilestone`, marks the task `COMPLETED` and emits `task_completed`.
+  - Without Outbox (local/in-memory mode), keep the synchronous fallback to make dev and tests easier.
 
-## Consequências
-- Prós
-  - Reduz risco de timeouts e duplicações causadas por retries do cliente.
-  - Permite retries e backoff sem travar requests.
-  - Mantém Postgres como fonte de verdade e trilha auditável de eventos/consumos.
-  - Permite **observabilidade por backlog** (XLEN / XPENDING summary / XPENDING por consumer) diretamente via métricas Prometheus expostas em `/metrics` — diagnosticar consumer stuck ou backpressure não requer acesso `redis-cli`.
-  - `XAUTOCLAIM` + métricas de per-consumer permitem detectar e recuperar automaticamente de workers mortos sem intervenção manual na grande maioria dos casos.
-- Contras
-  - Introduz consistência eventual: alguns efeitos passam a ocorrer após a resposta HTTP (ex.: `POST /tasks/:id/complete` retorna 202, release do escrow via Trustless Work é assíncrono).
-  - Aumenta a superfície operacional (worker + redis streams). Requer **baseline de observabilidade** (signed smoke + métricas obrigatórias + regras Prometheus) antes de cada deploy conforme [docs/observability.md](file:///home/jistriane/TrustGate/TrustGate/docs/observability.md).
-  - Exige disciplina para handlers idempotentes e contratos de evento versionáveis.
-  - A métrica `tg_stream_pending_consumer{stream,group,consumer}` tem uma label a mais; **cardinalidade deve ser mantida baixa** (número fixo de consumers, tipicamente 1–16), e o worker zera explicitamente consumers que desaparecem após amostragem para evitar explosão de timeseries.
+## Consequences
+- Pros
+  - Reduces the risk of timeouts and duplication caused by client retries.
+  - Allows retries and backoff without blocking requests.
+  - Keeps Postgres as the source of truth and an auditable trail of events/consumptions.
+  - Enables **backlog observability** (XLEN / XPENDING summary / XPENDING per consumer) directly through Prometheus metrics exposed at `/metrics` — diagnosing a stuck consumer or backpressure does not require `redis-cli` access.
+  - `XAUTOCLAIM` + per-consumer metrics allow detecting and automatically recovering from dead workers without manual intervention in the vast majority of cases.
+- Cons
+  - Introduces eventual consistency: some effects now happen after the HTTP response (e.g. `POST /tasks/:id/complete` returns 202, the escrow release via Trustless Work is asynchronous).
+  - Increases the operational surface (worker + redis streams). Requires an **observability baseline** (signed smoke + mandatory metrics + Prometheus rules) before every deploy, as described in [docs/observability.md](../observability.md).
+  - Demands discipline around idempotent handlers and versionable event contracts.
+  - The `tg_stream_pending_consumer{stream,group,consumer}` metric carries one extra label; **cardinality must be kept low** (a fixed number of consumers, typically 1–16), and the worker explicitly zeroes consumers that disappear after sampling to avoid a timeseries explosion.
 
-## Trade-offs operacionais adicionais (2026-08-05 update)
+## Additional operational trade-offs (2026-08-05 update)
 
-Para cada tick do worker, um caminho de **amostragem de backlog** executa a cada ~5 segundos (desacoplado do hot-path do tick para não adicionar latência em processamento de eventos):
+For each worker tick, a **backlog sampling** path runs every ~5 seconds (decoupled from the tick hot path so it does not add latency to event processing):
 
-| Amostragem | Onde lê | Métrica exposta | Por quê |
-|-----------|---------|-----------------|---------|
-| Stream size | Redis `XLEN` | `tg_stream_length{stream,group}` | Detecta produtor mais rápido que consumidores. |
-| PEL summary | Redis `XPENDING` summary count | `tg_stream_pending{stream,group}` | Detecta entries entregues mas nunca `XACK`ed (handler lento / erro). |
-| PEL por consumer | Redis `XPENDING` por consumer | `tg_stream_pending_consumer{stream,group,consumer}` | Detecta 1 worker específico travado / partitionado antes que `XAUTOCLAIM` colete. |
-| Outbox unprocessed | Postgres `processed_at IS NULL` | `tg_outbox_unprocessed` | Detecta publisher (Postgres → Stream) parado. |
-| Outbox failed | Postgres `attempts > 0 AND processed_at IS NULL` | `tg_outbox_failed` | Detecta publisher com falhas persistentes (emergência). |
+| Sampling | Where it reads | Exposed metric | Why |
+|----------|----------------|----------------|-----|
+| Stream size | Redis `XLEN` | `tg_stream_length{stream,group}` | Detects a producer faster than the consumers. |
+| PEL summary | Redis `XPENDING` summary count | `tg_stream_pending{stream,group}` | Detects entries delivered but never `XACK`ed (slow handler / error). |
+| PEL per consumer | Redis `XPENDING` per consumer | `tg_stream_pending_consumer{stream,group,consumer}` | Detects one specific worker stuck / partitioned before `XAUTOCLAIM` reclaims it. |
+| Outbox unprocessed | Postgres `processed_at IS NULL` | `tg_outbox_unprocessed` | Detects a stalled publisher (Postgres → Stream). |
+| Outbox failed | Postgres `attempts > 0 AND processed_at IS NULL` | `tg_outbox_failed` | Detects a publisher with persistent failures (emergency). |
 
-Intervalo de amostragem (default 5 s, ajustável via env var `OUTBOX_BACKLOG_SAMPLE_MS` em src/server.ts com mínimo 1000 ms e floor `Math.trunc`) foi escolhido para não sobrecarregar Redis/Postgres em ticks de 2 s; para workloads com >1k events/s, é seguro subir o intervalo para 10–15 s via ajuste da env var (não é mais hardcoded como na revisão inicial deste ADR; WorkerServiceOptions aceita `backlogSampleIntervalMs` como campo opcional, default 5000 ms).
+The sampling interval (default 5 s, tunable via the `OUTBOX_BACKLOG_SAMPLE_MS` env var in src/server.ts, with a 1000 ms minimum and a `Math.trunc` floor) was chosen so as not to overload Redis/Postgres on 2 s ticks; for workloads above 1k events/s it is safe to raise the interval to 10–15 s by adjusting the env var (it is no longer hardcoded as in the initial revision of this ADR; WorkerServiceOptions accepts `backlogSampleIntervalMs` as an optional field, default 5000 ms).
 
-## Alternativas consideradas
-- Executar integrações externas no request/response (síncrono)
-  - Rejeitado: alto risco de timeout, falhas de rede, e duplicação em retries.
-- Redis-only (sem outbox no Postgres)
-  - Rejeitado: maior risco de perda/indefinição de “fonte de verdade” e menor auditabilidade.
-- Exactly-once estrito
-  - Rejeitado: custo/complexidade maiores que o valor atual; at-least-once com idempotência atende o objetivo com menor risco.
-
+## Alternatives considered
+- Running external integrations inside request/response (synchronous)
+  - Rejected: high risk of timeouts, network failures, and duplication on retries.
+- Redis-only (no outbox in Postgres)
+  - Rejected: higher risk of losing / blurring the "source of truth" and lower auditability.
+- Strict exactly-once
+  - Rejected: cost/complexity higher than the current value; at-least-once with idempotency meets the goal at lower risk.

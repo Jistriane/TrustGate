@@ -32,9 +32,9 @@ bash scripts/observability-baseline.sh           # full stack + smoke + metrics 
 bash scripts/observability-baseline.sh --keep    # keep the stack alive after success to explore manually
 ```
 
-This script fails hard (`set -euo pipefail`) when any of the following regress: alert rules YAML structure, Grafana dashboard JSON structure, app/prom/grafana health, signed-request smoke (`/auth/nonce` → `/auth/signed-smoke` with a freshly generated `Keypair`), presence of required core metrics in `/metrics`, and loading of `trustgate-auth` / `trustgate-worker` rule groups in Prometheus. See [README baseline section](file:///home/jistriane/TrustGate/TrustGate/README.md#L668-L734).
+This script fails hard (`set -euo pipefail`) when any of the following regress: alert rules YAML structure, Grafana dashboard JSON structure, app/prom/grafana health, signed-request smoke (`/auth/nonce` → `/auth/signed-smoke` with a freshly generated `Keypair`), presence of required core metrics in `/metrics`, and loading of `trustgate-auth` / `trustgate-worker` rule groups in Prometheus. See [README baseline section](../README.md#L668-L734).
 
-> **⚠️ Pubnet prerequisites before running the baseline against production infra:** set `TRUST_PROXY_HOPS` (see [README env vars](file:///home/jistriane/TrustGate/TrustGate/README.md#71-environment-variables)) to the actual count of L7 proxies in front of the app (e.g. `1` for Cloudflare, `2` for Cloudflare + Nginx). Values `< 1` in a proxied deployment let attackers bypass the signature-auth per-IP rate limit (30 failed sigs/min) and also produce wrong `remoteAddress` in the structured request logs, which makes correlation during incident response unreliable.
+> **⚠️ Pubnet prerequisites before running the baseline against production infra:** set `TRUST_PROXY_HOPS` (see [README env vars](../README.md#71-environment-variables)) to the actual count of L7 proxies in front of the app (e.g. `1` for Cloudflare, `2` for Cloudflare + Nginx). Values `< 1` in a proxied deployment let attackers bypass the signature-auth per-IP rate limit (30 failed sigs/min) and also produce wrong `remoteAddress` in the structured request logs, which makes correlation during incident response unreliable.
 
 ### Local stack (Docker Compose)
 

@@ -208,7 +208,7 @@ export async function createEscrowProvider(input: CreateEscrowProviderInput): Pr
 }
 
 /**
- * Safe-by-default stub for OurOwnEscrowContractClient (Opção C / ADR0002
+ * Safe-by-default stub for OurOwnEscrowContractClient (Option C / ADR0002
  * fallback exit 15 days). TODAY every method throws a descriptive error that
  * lists which P0 blockers have not been cleared yet, to prevent accidental
  * activation of our own escrow on pubnet before (a) audits (b) bindings (c)
