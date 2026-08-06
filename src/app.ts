@@ -175,6 +175,7 @@ export function createApp(overrides: AppOverrides = {}): Express {
     escrowService,
     bidRepository,
     policyService,
+    auctionService,
     outboxService,
     safety,
   );
@@ -475,6 +476,24 @@ export function createApp(overrides: AppOverrides = {}): Express {
    *         description: Task not OPEN, or no pending bids.
    */
   app.post('/tasks/:id/select', adminAuth, idempotencyMw({ scope: 'select_bid' }), taskController.select);
+
+  /**
+   * @openapi
+   * /tasks/{id}:
+   *   get:
+   *     summary: Fetch a single task by id
+   *     tags: [Tasks]
+   *     parameters:
+   *       - { name: id, in: path, required: true, schema: { type: string } }
+   *     responses:
+   *       200:
+   *         description: Task.
+   *         content: { application/json: { schema: { $ref: '#/components/schemas/Task' } } }
+   *       404:
+   *         description: Task not found.
+   *         content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+   */
+  app.get('/tasks/:id', taskController.getById);
 
   /**
    * @openapi

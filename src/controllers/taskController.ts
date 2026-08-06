@@ -158,6 +158,16 @@ export class TaskController {
     res.status(201).json(toTaskDto(task));
   };
 
+  getById = async (req: Request, res: Response): Promise<void> => {
+    const taskId = String(req.params.id);
+    const task = await this.taskRepository.findById(taskId);
+    if (!task) {
+      res.status(404).json({ error: 'task not found' });
+      return;
+    }
+    res.status(200).json(toTaskDto(task));
+  };
+
   select = async (req: Request, res: Response): Promise<void> => {
     const taskId = String(req.params.id);
 

@@ -240,10 +240,10 @@ wait_for() {
 wait_for "app" "${APP_URL}/health" '"status":"ok"'
 wait_for "prometheus-ready" "${PROM_URL}/-/ready" "Prometheus Server is Ready"
 
-# Grafana /api/health usa JSON formatado com espaços variáveis entre versões
-# ("database":"ok" vs "database": "ok" vs "database"  :  "ok"). Usa regex POSIX
-# ERE tolerante via grep, em vez de substring fixa, para evitar timeouts falsos.
-# wait_for() não aceita regex nativamente, então validamos Grafana inline.
+# Grafana /api/health returns JSON whose spacing varies between versions
+# ("database":"ok" vs "database": "ok" vs "database"  :  "ok"). Use a tolerant
+# POSIX ERE regex via grep instead of a fixed substring, to avoid false timeouts.
+# wait_for() does not take a regex natively, so Grafana is validated inline.
 grafana_tries=120; grafana_delay=2
 for ((i=1;i<=grafana_tries;i++)); do
   code=$(curl -sS -o /tmp/baseline_grafana_body.$$ -w "%{http_code}" --max-time 10 "${GRAFANA_URL}/api/health" || echo "000")
