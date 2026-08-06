@@ -7,6 +7,7 @@ import { TaskRepositoryLike } from '../repositories/taskRepository';
 import { BidRepositoryLike } from '../repositories/bidRepository';
 import { IProviderEscrow } from '../services/escrowService';
 import { ExecutorNotAllowedError, PolicyService } from '../services/policyService';
+import { AuctionService } from '../services/auctionService';
 import { parseUsdcDecimalToStroops } from '../utils/money';
 import { toBidDto } from '../presenters/bidPresenter';
 import { OutboxService } from '../services/outboxService';
@@ -21,6 +22,7 @@ export class BidController {
     private readonly escrowService: IProviderEscrow,
     private readonly bidRepository: BidRepositoryLike,
     private readonly policyService: PolicyService,
+    private readonly auctionService: AuctionService,
     private readonly outbox?: OutboxService,
     safetyFeatures?: SafetyFeatures,
   ) {
@@ -139,6 +141,19 @@ export class BidController {
       aggregateId: bid.id,
       payload: toBidDto(bid),
     });
+
+    // Auto-select the first valid bid as the winner
+    try {
+      await this.auctionService.selectWinner(taskId);
+      logger.info(
+        { taskId, executorPublicKey: executor, bidId: bid.id },
+        '[AutoSelect] first valid bid selected as winner',
+      );
+    } catch (err) {
+      // Log but don't fail the bid placement if auto-selection fails
+      // (e.g., if another bid was placed simultaneously or task not found)
+      logger.warn({ taskId, bidId: bid.id, err }, '[AutoSelect] auto-selection skipped');
+    }
 
     res.status(201).json(toBidDto(bid));
   };

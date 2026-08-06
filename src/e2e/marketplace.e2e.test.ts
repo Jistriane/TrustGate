@@ -143,6 +143,7 @@ describe('Marketplace E2E flow (mocked)', () => {
     await expect(taskRepository.findById(taskId)).resolves.toMatchObject({ status: 'OPEN' });
 
     // 3. Lance — executor bids, locking collateral in a (fake) escrow.
+    // The first valid bid is auto-selected as the winner.
     const bidRes = await request(app).post('/bids').send({
       taskId,
       executor: executor.publicKey(),
@@ -152,23 +153,14 @@ describe('Marketplace E2E flow (mocked)', () => {
     });
 
     expect(bidRes.status).toBe(201);
-    expect(bidRes.body.status).toBe('PENDING');
+    expect(bidRes.body.status).toBe('PENDING'); // Response returns PENDING, then auto-selected
     const escrowId = bidRes.body.escrowId as string;
     expect(fakeEscrowService.escrows.has(escrowId)).toBe(true);
-    await expect(bidRepository.findById(bidRes.body.id)).resolves.toMatchObject({ status: 'PENDING' });
-
-    // 4. Selecionar — marketplace admin selects the (only) bid as winner.
-    const selectRes = await request(app)
-      .post(`/tasks/${taskId}/select`)
-      .set('x-admin-secret', process.env.ADMIN_SECRET as string);
-
-    expect(selectRes.status).toBe(200);
-    expect(selectRes.body.task.status).toBe('ASSIGNED');
-    expect(selectRes.body.winningBid.executorPublicKey).toBe(executor.publicKey());
-    await expect(taskRepository.findById(taskId)).resolves.toMatchObject({ status: 'ASSIGNED' });
+    // Auto-selection updates the bid status to SELECTED in the database
     await expect(bidRepository.findById(bidRes.body.id)).resolves.toMatchObject({ status: 'SELECTED' });
+    await expect(taskRepository.findById(taskId)).resolves.toMatchObject({ status: 'ASSIGNED' });
 
-    // 5. Pagar x402 — requester pays the executor's (mocked) result endpoint.
+    // 4. Pagar x402 — requester pays the executor's (mocked) result endpoint.
     const fakeFetchWithPayment = jest.fn().mockResolvedValue(
       new Response(
         JSON.stringify({ taskId, payloadHash: 'sha256:fake', payload: { ok: true } }),
@@ -189,7 +181,7 @@ describe('Marketplace E2E flow (mocked)', () => {
       `https://executor.example.com/executor/tasks/${taskId}/result`,
     );
 
-    // 6. Liberar Escrow — requester marks the task complete, releasing collateral.
+    // 5. Liberar Escrow — requester marks the task complete, releasing collateral.
     const completeRes = await request(app).post(`/tasks/${taskId}/complete`).send({
       requester: requester.publicKey(),
       secret: requester.secret(),
