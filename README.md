@@ -29,8 +29,28 @@ requester ──list task, pay fee──▶  marketplace  ◀──register, bid
                           escrow releases on completion
 ```
 
+## Demo
+
+One real run of the full lifecycle — executor registration, task creation, bid with
+collateral, automatic assignment, result publication and escrow settlement — recorded
+against the live API (27s, no narration):
+
+<video src="docs/media/trustgate-demo.mp4" poster="docs/media/trustgate-demo-poster.png" controls muted width="100%"></video>
+
+[![TrustGate demo](docs/media/trustgate-demo-poster.png)](docs/media/trustgate-demo.mp4)
+
+Every number on screen comes from that run: 6/6 stages, 38.3s from executor
+registration to settled escrow, $10 reserve, $9 winning bid, $10 collateral. The
+stage burst is slowed to 0.35x and the 36s settlement wait is compressed 10x —
+both labelled on screen. The throwaway secret keys the run prints are blurred in
+the recording.
+
+The video is built with Remotion in [`demo-video/`](demo-video/README.md), which also
+holds the capture script if you want to re-record it against your own instance.
+
 ## Table of contents
 
+- [Demo](#demo)
 - [Stack](#stack)
 - [Architecture](#architecture)
   - [System diagram](#system-diagram)
@@ -75,7 +95,7 @@ asynchronous processing.
 
 ### System diagram
 
-[[diagram: TrustGate arquitetura completa. Componentes: (1) Usuários: Requester Browser + Freighter wallet, Executor Browser + Freighter. (2) Off-chain API: Express rotas /auth /executors /tasks /bids /metrics. Camadas: SignatureAuth middleware, Controllers, Services (TaskService, BidService, EscrowService, MppChargeService, X402PaymentService, AuthController), Repositories (TaskRepository, BidRepository, OutboxRepository). (3) Persistência: Postgres (tabelas tasks, bids, outbox_events, event_consumptions, executors), Redis Streams (tg:events, consumer group tg-workers, XLEN/XPENDING). (4) Worker: tick loop a cada WORKER_POLL_MS, handlers por evento (task_completion_requested → releaseMilestone Trustless Work, webhook pós-resultado, outbox publisher). (5) Observabilidade: /metrics → Prometheus scrape → Grafana dashboards → alert rules, /health endpoints. (6) On-chain e externos: Stellar Soroban RPC + Horizon (Registry contract, USDC SAC), Trustless Work API (bid collateral + release), OZ Channels x402 facilitator, Webhook externo opcional. Setas: Requester/Executor -> signed fetch (x-tg-* headers + idempotency-key) -> API. API -> Postgres (transação outbox_events atômica). API -> Redis Streams (publisher marca processed_at). Worker -> XREADGROUP/XAUTOCLAIM -> handlers -> Trustless Work / Webhook / Postgres event_consumptions (idempotência). Prometheus -> scrape app:3000/metrics, Grafana -> Prometheus datasource + dashboards provisionados.]]
+[[diagram: Complete TrustGate architecture. Components: (1) Users: Requester Browser + Freighter wallet, Executor Browser + Freighter. (2) Off-chain API: Express routes /auth /executors /tasks /bids /metrics. Layers: SignatureAuth middleware, Controllers, Services (TaskService, BidService, EscrowService, MppChargeService, X402PaymentService, AuthController), Repositories (TaskRepository, BidRepository, OutboxRepository). (3) Persistence: Postgres (tables tasks, bids, outbox_events, event_consumptions, executors), Redis Streams (tg:events, consumer group tg-workers, XLEN/XPENDING). (4) Worker: tick loop every WORKER_POLL_MS, per-event handlers (task_completion_requested → releaseMilestone Trustless Work, post-result webhook, outbox publisher). (5) Observability: /metrics → Prometheus scrape → Grafana dashboards → alert rules, /health endpoints. (6) On-chain and external: Stellar Soroban RPC + Horizon (Registry contract, USDC SAC), Trustless Work API (bid collateral + release), OZ Channels x402 facilitator, optional external webhook. Arrows: Requester/Executor -> signed fetch (x-tg-* headers + idempotency-key) -> API. API -> Postgres (atomic outbox_events transaction). API -> Redis Streams (publisher marks processed_at). Worker -> XREADGROUP/XAUTOCLAIM -> handlers -> Trustless Work / Webhook / Postgres event_consumptions (idempotency). Prometheus -> scrape app:3000/metrics, Grafana -> Prometheus datasource + provisioned dashboards.]]
 
 ```mermaid
 flowchart LR
@@ -194,7 +214,7 @@ sequenceDiagram
 ### Worker & Outbox pattern
 
 See the full architectural justification in
-[ADR 0001](file:///home/jistriane/TrustGate/TrustGate/docs/adr/0001-outbox-worker-idempotency.md).
+[ADR 0001](docs/adr/0001-outbox-worker-idempotency.md).
 
 **High level**:
 
@@ -252,7 +272,7 @@ sequenceDiagram
 Server rate limits: **10 failed auth attempts/min per public key**,
 **30 failed/min per IP**. After the threshold, legitimate retries are 429 for
 the remainder of the sliding window — see
-[P1: Security / abuse](file:///home/jistriane/TrustGate/TrustGate/docs/observability.md#L375-L411)
+[P1: Security / abuse](docs/observability.md#L375-L411)
 runbook.
 
 ## Quick start (local network)
@@ -281,8 +301,8 @@ Once it's up:
 
 ## Environment variables
 
-Full list with inline comments lives in [.env.example](file:///home/jistriane/TrustGate/TrustGate/.env.example);
-a ready-made testnet config lives in [.env.testnet](file:///home/jistriane/TrustGate/TrustGate/.env.testnet)
+Full list with inline comments lives in [.env.example](.env.example);
+a ready-made testnet config lives in [.env.testnet](.env.testnet)
 (see [testnet section](#running-against-real-stellar-testnet)).
 
 | Variable | Required | Default | Description |
@@ -698,16 +718,16 @@ Every request/response shape is documented interactively at `GET /api-docs`.
 ## Observability
 
 - **Runbooks, SLOs, thresholds, P0/P1 triage** — all live in
-  [docs/observability.md](file:///home/jistriane/TrustGate/TrustGate/docs/observability.md).
+  [docs/observability.md](docs/observability.md).
 - **Metric catalogs**
-  ([auth](file:///home/jistriane/TrustGate/TrustGate/src/config/authMetrics.ts),
-  [worker+backlog](file:///home/jistriane/TrustGate/TrustGate/src/config/workerMetrics.ts))
+  ([auth](src/config/authMetrics.ts),
+  [worker+backlog](src/config/workerMetrics.ts))
   are the source of truth for label names and PromQL used in dashboards and
   alerts.
-- **Alert rules** — [prom/alerts/trustgate-alerts.yml](file:///home/jistriane/TrustGate/TrustGate/prom/alerts/trustgate-alerts.yml)
+- **Alert rules** — [prom/alerts/trustgate-alerts.yml](prom/alerts/trustgate-alerts.yml)
   (two groups: `trustgate-auth`, `trustgate-worker`).
 - **Grafana dashboards** — provisioned from
-  [grafana/dashboards/](file:///home/jistriane/TrustGate/TrustGate/grafana/dashboards/):
+  [grafana/dashboards/](grafana/dashboards/):
   `trustgate-auth-overview.json`, `trustgate-worker-overview.json`.
 - **Local observability stack** — `docker-compose.observability.yml`
   provisions Prometheus + scrape configs + rules and Grafana (anonymous
@@ -805,17 +825,17 @@ npx ts-node --transpile-only scripts/baseline-selftest.ts
 ## Architecture Decision Records
 
 Design choices that are non-obvious or easy to second-guess are captured as
-ADRs under [docs/adr/](file:///home/jistriane/TrustGate/TrustGate/docs/adr/).
+ADRs under [docs/adr/](docs/adr/).
 When proposing a change to one of these systems, open a new ADR and reference
 it in your PR description.
 
 | ID | Title | Status |
 |----|-------|--------|
-| 0001 | [Outbox + Worker idempotente (Redis Streams) e conclusão assíncrona com Trustless Work](file:///home/jistriane/TrustGate/TrustGate/docs/adr/0001-outbox-worker-idempotency.md) | ✅ Accepted 2026-08-04 |
-| 0002 | [Estratégia on-chain: Registry Soroban Immutable + Escrow via SaaS Trustless Work](file:///home/jistriane/TrustGate/TrustGate/docs/adr/0002-on-chain-strategy-registry-immutable-escrow-saas.md) | ✅ Accepted 2026-08-05 |
+| 0001 | [Outbox + idempotent Worker (Redis Streams) and asynchronous completion with Trustless Work](docs/adr/0001-outbox-worker-idempotency.md) | ✅ Accepted 2026-08-04 |
+| 0002 | [On-chain strategy: Registry Soroban Immutable + Escrow via Trustless Work SaaS](docs/adr/0002-on-chain-strategy-registry-immutable-escrow-saas.md) | ✅ Accepted 2026-08-05 |
 
 To add a new ADR, copy `0001-*.md` as `0003-*.md`, fill in the
-`Contexto / Decisão / Consequências / Alternativas consideradas` sections,
+`Context / Decision / Consequences / Alternatives considered` sections,
 and reference it from this table.
 
 ## Glossary
