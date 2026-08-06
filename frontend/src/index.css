@@ -1,0 +1,150 @@
+/* ==========================================================================
+   TrustGate — design tokens + base
+   Brand teal carried over from the original #0f766e, restated in OKLCH.
+   ========================================================================== */
+
+:root {
+  color-scheme: light;
+
+  /* --- Brand ------------------------------------------------------------ */
+  --brand: oklch(0.48 0.084 181);
+  --brand-strong: oklch(0.4 0.07 181);
+
+  /* --- Neutrals (tinted ~0.005 chroma toward the brand hue) -------------- */
+  --bg: oklch(0.98 0.004 181);
+  --surface: oklch(1 0 0);
+  --surface-2: oklch(0.972 0.004 181);
+  --surface-3: oklch(0.95 0.006 181);
+  --line: oklch(0.912 0.006 181);
+  --line-soft: oklch(0.945 0.005 181);
+
+  /* Text: --ink and --ink-2 both clear 4.5:1 on --surface and --surface-2.
+     --ink-faint is for rails, dividers and disabled glyphs — never body copy. */
+  --ink: oklch(0.235 0.012 181);
+  --ink-2: oklch(0.455 0.011 181);
+  --ink-faint: oklch(0.66 0.008 181);
+
+  /* --- State ------------------------------------------------------------ */
+  --run: oklch(0.545 0.17 258);
+  --run-wash: oklch(0.975 0.013 258);
+  --run-edge: oklch(0.865 0.055 258);
+
+  --ok: oklch(0.56 0.125 163);
+  --ok-ink: oklch(0.43 0.098 163);
+  --ok-wash: oklch(0.976 0.019 163);
+  --ok-edge: oklch(0.87 0.062 163);
+
+  --err: oklch(0.575 0.19 25);
+  --err-ink: oklch(0.465 0.165 25);
+  --err-wash: oklch(0.973 0.014 25);
+  --err-edge: oklch(0.878 0.052 25);
+
+  /* --- Roles (who acts in a given step) --------------------------------- */
+  --role-req-ink: oklch(0.395 0.07 181);
+  --role-req-wash: oklch(0.968 0.018 181);
+  --role-req-edge: oklch(0.885 0.042 181);
+
+  --role-exec-ink: oklch(0.44 0.13 300);
+  --role-exec-wash: oklch(0.972 0.017 300);
+  --role-exec-edge: oklch(0.888 0.043 300);
+
+  --role-sys-ink: var(--ink-2);
+  --role-sys-wash: var(--surface-3);
+  --role-sys-edge: var(--line);
+
+  /* --- Space (4pt base) -------------------------------------------------- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+
+  /* --- Radii and motion --------------------------------------------------- */
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --r-pill: 999px;
+
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --dur: 200ms;
+  --dur-slow: 320ms;
+
+  --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font);
+  font-size: 15px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background: var(--bg);
+  color: var(--ink);
+}
+
+#root {
+  min-height: 100vh;
+}
+
+h1,
+h2,
+h3 {
+  margin: 0;
+  text-wrap: balance;
+  letter-spacing: -0.015em;
+}
+
+p {
+  margin: 0;
+  text-wrap: pretty;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Blanket reduced-motion safety net. Elements that carry state through motion
+   (the in-flight spinner) opt out with data-motion="essential" and define their
+   own calmer alternative — killing them outright would drop the signal. */
+@media (prefers-reduced-motion: reduce) {
+  *:not([data-motion="essential"]),
+  *:not([data-motion="essential"])::before,
+  *:not([data-motion="essential"])::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

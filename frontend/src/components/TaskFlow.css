@@ -1,0 +1,790 @@
+/* ==========================================================================
+   TaskFlow — run control, lifecycle timeline, side panels, result
+   ========================================================================== */
+
+.run {
+  display: grid;
+  gap: var(--space-5);
+}
+
+/* --- Shared surface ------------------------------------------------------- */
+
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  padding: var(--space-5);
+}
+
+.panel__title {
+  font-size: 13.5px;
+  font-weight: 660;
+  letter-spacing: -0.005em;
+  color: var(--ink);
+}
+
+.panel__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.panel__count {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- Run bar -------------------------------------------------------------- */
+
+.runbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  column-gap: var(--space-6);
+  row-gap: var(--space-5);
+}
+
+.runbar__title {
+  font-size: 19px;
+  font-weight: 660;
+  margin-bottom: var(--space-1);
+}
+
+.runbar__desc {
+  font-size: 14px;
+  color: var(--ink-2);
+  max-width: 62ch;
+}
+
+.runbar__stats {
+  display: flex;
+  gap: var(--space-6);
+}
+
+.stat {
+  display: grid;
+  gap: 2px;
+  min-width: 62px;
+}
+
+.stat__label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
+.stat__value {
+  font-size: 22px;
+  font-weight: 660;
+  line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+.stat__total {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
+.runbar__track {
+  grid-column: 1 / -1;
+  height: 6px;
+  border-radius: var(--r-pill);
+  background: var(--surface-3);
+  overflow: hidden;
+}
+
+.runbar__fill {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--brand);
+  transition: width var(--dur-slow) var(--ease), background var(--dur) var(--ease);
+}
+
+.runbar__fill[data-state="error"] {
+  background: var(--err);
+}
+
+.runbar__fill[data-state="done"] {
+  background: var(--ok);
+}
+
+@media (max-width: 860px) {
+  .runbar {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .runbar__stats {
+    gap: var(--space-7);
+  }
+
+  .runbar .btn {
+    justify-self: start;
+  }
+}
+
+/* --- Buttons -------------------------------------------------------------- */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: 12px 22px;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: var(--brand);
+  color: #fff;
+  font-size: 14.5px;
+  font-weight: 620;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+
+.btn:hover:not(:disabled) {
+  background: var(--brand-strong);
+}
+
+.btn:active:not(:disabled) {
+  background: var(--brand-strong);
+  transform: translateY(1px);
+}
+
+.btn:disabled {
+  background: var(--surface-3);
+  border-color: var(--line);
+  color: var(--ink-2);
+  cursor: progress;
+}
+
+.btn__spin {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid oklch(0.66 0.008 181 / 0.45);
+  border-top-color: var(--ink-2);
+  animation: tg-spin 720ms linear infinite;
+}
+
+.iconbtn {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--ink-2);
+  cursor: pointer;
+  position: relative;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease),
+    border-color var(--dur) var(--ease);
+}
+
+/* Keep the 26px visual, expand the hit area to 40px. Capped at -7px so
+   stacked rows (16px apart) never overlap each other's targets. */
+.iconbtn::after {
+  content: "";
+  position: absolute;
+  inset: -7px;
+}
+
+.iconbtn:hover {
+  background: var(--surface-2);
+  color: var(--ink);
+  border-color: var(--ink-faint);
+}
+
+.iconbtn[data-copied="true"] {
+  border-color: var(--ok-edge);
+  background: var(--ok-wash);
+  color: var(--ok-ink);
+}
+
+/* --- Two-column body ------------------------------------------------------ */
+
+.run__body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-5);
+  align-items: start;
+}
+
+@media (min-width: 1080px) {
+  .run__body {
+    grid-template-columns: minmax(0, 1fr) 340px;
+  }
+}
+
+.run__side {
+  display: grid;
+  gap: var(--space-5);
+  min-width: 0;
+}
+
+/* --- Lifecycle timeline --------------------------------------------------- */
+
+.flow {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  counter-reset: none;
+}
+
+.flow__step {
+  position: relative;
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  gap: var(--space-4);
+  padding-bottom: var(--space-5);
+}
+
+.flow__step:last-child {
+  padding-bottom: 0;
+}
+
+/* Full-row state wash — a highlight, not a nested card. */
+.flow__step::before {
+  content: "";
+  position: absolute;
+  inset: calc(var(--space-2) * -1) calc(var(--space-3) * -1)
+    calc(var(--space-5) - var(--space-2)) calc(var(--space-3) * -1);
+  border-radius: var(--r-md);
+  background: transparent;
+  transition: background var(--dur-slow) var(--ease);
+}
+
+.flow__step:last-child::before {
+  bottom: calc(var(--space-2) * -1);
+}
+
+.flow__step[data-status="running"]::before {
+  background: var(--run-wash);
+}
+
+.flow__step[data-status="error"]::before {
+  background: var(--err-wash);
+}
+
+.flow__rail {
+  position: relative;
+  display: flex;
+  justify-content: center;
+}
+
+.flow__step:not(:last-child) .flow__rail::after {
+  content: "";
+  position: absolute;
+  top: 42px;
+  bottom: calc(var(--space-5) * -1);
+  left: calc(50% - 1px);
+  width: 2px;
+  border-radius: 1px;
+  background: var(--line);
+  transition: background var(--dur-slow) var(--ease);
+}
+
+.flow__step[data-status="done"] .flow__rail::after {
+  background: var(--ok-edge);
+}
+
+.flow__node {
+  position: relative;
+  z-index: 1;
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  border: 2px solid var(--line);
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: 14px;
+  font-weight: 680;
+  font-variant-numeric: tabular-nums;
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease),
+    color var(--dur) var(--ease);
+}
+
+.flow__step[data-status="running"] .flow__node {
+  border-color: var(--run-edge);
+  background: var(--surface);
+  color: var(--run);
+}
+
+.flow__step[data-status="done"] .flow__node {
+  border-color: var(--ok);
+  background: var(--ok);
+  color: #fff;
+}
+
+.flow__step[data-status="error"] .flow__node {
+  border-color: var(--err);
+  background: var(--err);
+  color: #fff;
+}
+
+.flow__spin {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid var(--run-edge);
+  border-top-color: var(--run);
+  animation: tg-spin 720ms linear infinite;
+}
+
+/* 6px lines the title's optical centre up with the 36px node's centre. */
+.flow__body {
+  position: relative;
+  z-index: 1;
+  min-width: 0;
+  padding-top: 6px;
+}
+
+.flow__head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-1);
+}
+
+.flow__title {
+  font-size: 15.5px;
+  font-weight: 640;
+  letter-spacing: -0.01em;
+}
+
+.flow__desc {
+  font-size: 14px;
+  color: var(--ink-2);
+  max-width: 66ch;
+}
+
+.flow__detail {
+  display: inline-block;
+  margin-top: var(--space-3);
+  padding: 5px 10px;
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  border: 1px solid var(--line-soft);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+.flow__step[data-status="running"] .flow__detail {
+  border-color: var(--run-edge);
+  background: var(--surface);
+  color: var(--run);
+}
+
+.flow__step[data-status="done"] .flow__detail {
+  border-color: var(--ok-edge);
+  background: var(--ok-wash);
+  color: var(--ok-ink);
+}
+
+.flow__step[data-status="error"] .flow__detail {
+  border-color: var(--err-edge);
+  background: var(--surface);
+  color: var(--err-ink);
+}
+
+/* --- Role chips ----------------------------------------------------------- */
+
+.role {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 9px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--role-sys-edge);
+  background: var(--role-sys-wash);
+  color: var(--role-sys-ink);
+  font-size: 12px;
+  font-weight: 620;
+  white-space: nowrap;
+}
+
+.role[data-role="requester"] {
+  border-color: var(--role-req-edge);
+  background: var(--role-req-wash);
+  color: var(--role-req-ink);
+}
+
+.role[data-role="executor"] {
+  border-color: var(--role-exec-edge);
+  background: var(--role-exec-wash);
+  color: var(--role-exec-ink);
+}
+
+/* --- Task state ----------------------------------------------------------- */
+
+.states {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-3);
+}
+
+.state {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-3);
+  position: relative;
+  font-size: 13.5px;
+  font-weight: 600;
+  font-family: var(--mono);
+  letter-spacing: 0.01em;
+  color: var(--ink-faint);
+  transition: color var(--dur) var(--ease);
+}
+
+/* Spans the 3.5px below the dot, the 12px row gap, and the 3.5px above the
+   next dot — 20px from the dot's bottom edge. */
+.state:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  left: 6px;
+  top: 17px;
+  height: 20px;
+  width: 2px;
+  background: var(--line);
+  transition: background var(--dur) var(--ease);
+}
+
+.state__dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid var(--line);
+  background: var(--surface);
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+
+.state[data-reached="true"] {
+  color: var(--ink-2);
+}
+
+.state[data-reached="true"] .state__dot {
+  border-color: var(--ok);
+  background: var(--ok);
+}
+
+.state[data-reached="true"]:not(:last-child)::after {
+  background: var(--ok-edge);
+}
+
+.state[data-current="true"] {
+  color: var(--ink);
+}
+
+.state[data-current="true"] .state__dot {
+  border-color: var(--brand);
+  background: var(--brand);
+  box-shadow: 0 0 0 3px oklch(0.48 0.084 181 / 0.18);
+}
+
+/* --- Key/value rows ------------------------------------------------------- */
+
+.kv {
+  display: grid;
+  gap: var(--space-4);
+  margin: 0;
+  min-width: 0;
+}
+
+.kv dt,
+.kv dd {
+  margin: 0;
+}
+
+.kv__row {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.kv__key {
+  font-size: 13px;
+  color: var(--ink-2);
+}
+
+.kv__val {
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.kv__val[data-empty="true"] {
+  color: var(--ink-faint);
+}
+
+.kv__sep {
+  height: 1px;
+  background: var(--line-soft);
+  margin: var(--space-1) 0;
+}
+
+/* --- Activity log --------------------------------------------------------- */
+
+.log {
+  display: flex;
+  flex-direction: column;
+}
+
+.log__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-2);
+  max-height: 340px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.log__entry {
+  display: grid;
+  grid-template-columns: 8px auto minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+  border-top: 1px solid var(--line-soft);
+  animation: tg-enter var(--dur-slow) var(--ease) both;
+}
+
+.log__entry:first-child {
+  border-top: 0;
+}
+
+.log__dot {
+  width: 8px;
+  height: 8px;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: var(--ink-faint);
+}
+
+.log__entry[data-level="success"] .log__dot {
+  background: var(--ok);
+}
+
+.log__entry[data-level="error"] .log__dot {
+  background: var(--err);
+}
+
+.log__time {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+  padding-top: 1px;
+}
+
+.log__msg {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.log__entry[data-level="error"] .log__msg {
+  color: var(--err-ink);
+}
+
+.log__empty {
+  font-size: 13.5px;
+  color: var(--ink-2);
+  padding: var(--space-3) 0 var(--space-1);
+  max-width: 40ch;
+}
+
+/* --- Alerts and result ---------------------------------------------------- */
+
+.alert {
+  display: grid;
+  gap: var(--space-1);
+  padding: var(--space-4);
+  border-radius: var(--r-md);
+  border: 1px solid var(--err-edge);
+  background: var(--err-wash);
+  color: var(--err-ink);
+}
+
+.alert__title {
+  font-size: 14px;
+  font-weight: 660;
+}
+
+.alert__body {
+  font-size: 13.5px;
+  font-family: var(--mono);
+  overflow-wrap: anywhere;
+  color: var(--err-ink);
+}
+
+.result {
+  border-color: var(--ok-edge);
+  background: var(--ok-wash);
+}
+
+.result__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.result__check {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--ok);
+  color: #fff;
+}
+
+.result__title {
+  font-size: 16px;
+  font-weight: 660;
+  color: var(--ok-ink);
+}
+
+/* Single column on purpose: a 56-char secret key on one unwrapped line is
+   far easier to read than two cramped columns of wrapped strings. */
+.result .kv__row {
+  grid-template-columns: 120px minmax(0, 1fr) auto;
+}
+
+.result .kv__val {
+  color: var(--ok-ink);
+}
+
+.result .iconbtn {
+  background: transparent;
+  border-color: var(--ok-edge);
+  color: var(--ok-ink);
+}
+
+.result .iconbtn:hover {
+  background: var(--surface);
+}
+
+.result__note {
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--ok-edge);
+  font-size: 13px;
+  color: var(--ok-ink);
+  max-width: 78ch;
+}
+
+/* --- Small screens -------------------------------------------------------- */
+
+@media (max-width: 560px) {
+  .panel {
+    padding: var(--space-4);
+  }
+
+  .runbar__title {
+    font-size: 17.5px;
+  }
+
+  .flow__step {
+    grid-template-columns: 30px minmax(0, 1fr);
+    gap: var(--space-3);
+  }
+
+  .flow__node {
+    width: 30px;
+    height: 30px;
+    font-size: 13px;
+  }
+
+  .flow__step:not(:last-child) .flow__rail::after {
+    top: 36px;
+  }
+
+  .flow__body {
+    padding-top: 3px;
+  }
+
+  /* Stack the label above the value so long keys and hashes get full width. */
+  .kv__row,
+  .result .kv__row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .kv__key {
+    grid-column: 1 / -1;
+    margin-bottom: calc(var(--space-2) * -1);
+  }
+}
+
+/* --- Motion --------------------------------------------------------------- */
+
+@keyframes tg-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes tg-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@keyframes tg-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Spinners still have to read as "in flight" without rotation. */
+@media (prefers-reduced-motion: reduce) {
+  .flow__spin,
+  .btn__spin {
+    border-top-color: inherit;
+    animation: tg-pulse 1.6s ease-in-out infinite !important;
+    animation-duration: 1.6s !important;
+    animation-iteration-count: infinite !important;
+  }
+
+  .flow__spin {
+    border-color: var(--run);
+  }
+
+  .btn__spin {
+    border-color: var(--ink-2);
+  }
+}

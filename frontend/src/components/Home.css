@@ -1,0 +1,120 @@
+/* ==========================================================================
+   Home — app shell: top bar + page frame
+   ========================================================================== */
+
+.shell {
+  width: 100%;
+  max-width: 1240px;
+  margin: 0 auto;
+  padding: var(--space-6) clamp(var(--space-4), 4vw, var(--space-7)) var(--space-7);
+}
+
+/* --- Top bar -------------------------------------------------------------- */
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  padding-bottom: var(--space-5);
+  margin-bottom: var(--space-6);
+  border-bottom: 1px solid var(--line);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.brand__mark {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: var(--r-md);
+  background: var(--brand);
+  color: #fff;
+}
+
+.brand__name {
+  font-size: 20px;
+  font-weight: 680;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+}
+
+.brand__tag {
+  font-size: 13.5px;
+  color: var(--ink-2);
+  line-height: 1.35;
+}
+
+.topbar__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* --- Badges --------------------------------------------------------------- */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 5px 11px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.badge--network {
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.01em;
+}
+
+.badge__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ink-faint);
+  transition: background var(--dur) var(--ease);
+}
+
+.badge[data-state="online"] {
+  border-color: var(--ok-edge);
+  background: var(--ok-wash);
+  color: var(--ok-ink);
+}
+
+.badge[data-state="online"] .badge__dot {
+  background: var(--ok);
+}
+
+.badge[data-state="offline"] {
+  border-color: var(--err-edge);
+  background: var(--err-wash);
+  color: var(--err-ink);
+}
+
+.badge[data-state="offline"] .badge__dot {
+  background: var(--err);
+}
+
+@media (max-width: 560px) {
+  .topbar {
+    align-items: flex-start;
+  }
+
+  .brand__tag {
+    display: none;
+  }
+}
