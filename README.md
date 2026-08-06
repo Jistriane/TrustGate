@@ -37,9 +37,11 @@ One real run of the full lifecycle — executor registration, task creation, bid
 with collateral, automatic assignment, result publication, and escrow
 settlement — recorded against the live API (27s, no narration):
 
-<video src="docs/media/trustgate-demo.mp4" poster="docs/media/trustgate-demo-poster.png" controls muted width="100%"></video>
+![TrustGate demo](docs/media/trustgate-demo.gif)
 
-[![TrustGate demo](docs/media/trustgate-demo-poster.png)](docs/media/trustgate-demo.mp4)
+The original MP4 recording (with the same content) is available at
+[`docs/media/trustgate-demo.mp4`](docs/media/trustgate-demo.mp4) if you'd
+rather watch it outside GitHub.
 
 Every number on screen comes from that run: 6/6 stages, 38.3s from executor
 registration to settled escrow, $10 reserve, $9 winning bid, $10 collateral.
