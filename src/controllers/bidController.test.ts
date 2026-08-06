@@ -104,6 +104,12 @@ describe('POST /bids', () => {
       async getExecutor() {
         throw new Error('not implemented');
       },
+      async updateExecutor() {
+        throw new Error('not implemented');
+      },
+      async unregisterExecutor() {
+        throw new Error('not implemented');
+      },
     };
 
     const fakeEscrowService = {
@@ -148,6 +154,12 @@ describe('POST /bids', () => {
         throw new Error('not implemented');
       },
       async getExecutor() {
+        throw new Error('not implemented');
+      },
+      async updateExecutor() {
+        throw new Error('not implemented');
+      },
+      async unregisterExecutor() {
         throw new Error('not implemented');
       },
     };

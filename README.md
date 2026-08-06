@@ -4,11 +4,31 @@
 executors bid with collateral, the marketplace picks a winner, and Soroban + escrow
 settle the deal automatically — no middleman holding funds.
 
+![CI Status](https://github.com/jistriane/TrustGate/actions/workflows/ci.yml/badge.svg?branch=main)
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+![Soroban 22.x](https://img.shields.io/badge/Soroban-22.x-teal?logo=stellar)
+![Node.js 20](https://img.shields.io/badge/Node.js-20.x-brightgreen)
+![Coverage](https://img.shields.io/badge/coverage-31.6%25-yellow)
+![Language](https://img.shields.io/badge/language-100%25%20English-informational)
+
+> **🌐 Language baseline (2026-08-06):** the whole repository is standardized to 100% English.
+> Documentation, code comments, Swagger UI, Zod validation messages, runtime logs, scripts, CLI
+> output, dashboards, and runbooks are all EN-only (zero pt-BR residual except the state-machine
+> ASCII diagram inside `contracts/escrow/src/lib.rs` which is preserved byte-by-byte per
+> architectural rule).
+
+---
+
+**Official Deploy (SDF Testnet — 2026-08-06):** Registry v2 + Escrow Option C live with storage
+initialized (AlreadyInitialized #15 confirmed on both). See
+[§ Running against real Stellar testnet](#running-against-real-stellar-testnet).
+
 Highlights:
 
 - **On-chain executor registry** (Soroban `Registry` contract) — only allow-listed
   executors can win bids.
-- **Bid-collateral escrow** via Trustless Work — executors post stake to deter fraud.
+- **Bid-collateral escrow** via Trustless Work (default) or self-hosted Soroban Escrow
+  (Option C, 15-day immutable fallback exit from ADR0002/ADR0008).
 - **Pay-per-result access** (x402 + MPP) — requesters pay USDC only when fetching
   the actual deliverable.
 - **Event-driven core** (Outbox pattern + Redis Streams + Worker) — all external
@@ -16,38 +36,139 @@ Highlights:
 - **Signed requests** (testnet/pubnet) — no secret keys over the wire; every
   state-mutating call is authenticated via `x-tg-*` headers and a server-issued
   one-time nonce.
-- **Observability built-in** — Prometheus metrics (auth + worker + backlog),
-  Grafana dashboards, alerting rules, P0/P1 runbooks, and a one-command
-  [baseline verifier](#observability-baseline-verification) that regressions
-  can't sneak past.
+- **5 localhost agents + observability built-in** — one-command stack: App + Worker,
+  Prometheus, Grafana (2 dashboards), Stellar Standalone, and the optional Webhook
+  Receiver. Alert rules, P0/P1 runbooks, and a one-command
+  [baseline verifier](#observability-baseline-verification) ship by default.
 
 ```text
-requester ──list task, pay fee──▶  marketplace  ◀──register, bid + collateral── executor
-                                        │
-                                  select winner
-                                        │
-                          escrow releases on completion
+requester ──list task, pay listing fee──▶ ┌──────────────────────────────┐ ◀──register, bid + collateral── executor
+                                           │   TrustGate Marketplace      │
+                                           │  (API :3000 + Worker)         │
+                                           │ ┌────────────┬──────────────┐│
+                                           │ │  Postgres   │ Redis Streams││
+                                           │ │  (tasks,    │  (tg:events,││
+                                           │ │   bids,     │   tg-workers││
+                                           │ │   outbox)   │   group)    ││
+                                           │ └────────────┴──────────────┘│
+                                           └──────────────┬───────────────┘
+                                       select winner     │    1) escrow release on completion
+                                  outbox → Worker tick ──┘    2) webhook POST :4000
+                                                          3) x402 USDC charge to executor
+
+                    on-chain (Stellar Soroban RPC :8000)               observability stack
+          ┌──────────────────────────┴──────────────────────┐     ┌───────────────┴──────────────────┐
+          │ Registry v2  │ Escrow (Option C) │ SAC USDC       │     │  Prometheus :9090  │  Grafana :3001 │
+          └─────────────────────────────────────────────────┘     └────────────────────────────────────┘
 ```
 
 ## Table of contents
 
-- [Stack](#stack)
-- [Architecture](#architecture)
-  - [System diagram](#system-diagram)
-  - [Full lifecycle sequence](#full-lifecycle-sequence)
-  - [Worker & Outbox pattern](#worker--outbox-pattern)
-  - [Signed request flow](#signed-request-flow-on-testnetpubnet)
-- [Quick start](#quick-start-local-network)
-- [Environment variables](#environment-variables)
-- [Testing](#testing)
-- [Docker (full stack)](#docker-full-stack)
-- [Running against real Stellar testnet](#running-against-real-stellar-testnet)
-- [Signed requests (dApp)](#signed-requests-dapp)
-- [API walkthrough](#example-full-lifecycle-via-curl)
-- [Observability](#observability)
-- [Architecture Decision Records](#architecture-decision-records)
-- [Glossary](#glossary)
-- [Known limitations](#known-limitations)
+- [TrustGate](#trustgate)
+  - [Table of contents](#table-of-contents)
+  - [Zero-config 60-second start](#zero-config-60-second-start)
+  - [5 localhost agents quick links](#5-localhost-agents-quick-links)
+  - [Stack](#stack)
+  - [Architecture](#architecture)
+    - [System diagram](#system-diagram)
+    - [5 localhost agents dashboard](#5-localhost-agents-dashboard)
+    - [Full lifecycle sequence](#full-lifecycle-sequence)
+    - [Worker \& Outbox pattern](#worker--outbox-pattern)
+    - [Zero-config 60-second bootstrap pipeline](#zero-config-60-second-bootstrap-pipeline)
+    - [Signed request flow (on testnet/pubnet)](#signed-request-flow-on-testnetpubnet)
+  - [Quick start (local network)](#quick-start-local-network)
+    - [0. Generate dev wallet (Optional, 30s — step-by-step to avoid leaking SK..)](#0-generate-dev-wallet-optional-30s--step-by-step-to-avoid-leaking-sk)
+    - [1. Spin up stack + run marketplace](#1-spin-up-stack--run-marketplace)
+    - [Docker (recommended shortcuts)](#docker-recommended-shortcuts)
+  - [Environment variables](#environment-variables)
+    - [Webhook receiver (local)](#webhook-receiver-local)
+  - [Testing](#testing)
+    - [Live external tests (skipped by default)](#live-external-tests-skipped-by-default)
+  - [Docker (full stack)](#docker-full-stack)
+  - [Running against real Stellar testnet](#running-against-real-stellar-testnet)
+    - [Official Deploy (SDF Testnet — 06/08/2026)](#official-deploy-sdf-testnet--06082026)
+  - [Signed requests (dApp)](#signed-requests-dapp)
+    - [Install (React/Next.js)](#install-reactnextjs)
+    - [Snippet](#snippet)
+    - [Freighter smoke test (local/Docker)](#freighter-smoke-test-localdocker)
+    - [Troubleshooting (Freighter / signed requests)](#troubleshooting-freighter--signed-requests)
+  - [Example: full lifecycle via curl](#example-full-lifecycle-via-curl)
+  - [Observability](#observability)
+  - [Observability baseline verification](#observability-baseline-verification)
+    - [What it does](#what-it-does)
+    - [How to run](#how-to-run)
+    - [CLI reference](#cli-reference)
+    - [Optional: signed-request + metrics self-test (no full Docker stack)](#optional-signed-request--metrics-self-test-no-full-docker-stack)
+  - [Architecture Decision Records](#architecture-decision-records)
+  - [Glossary](#glossary)
+  - [Known limitations](#known-limitations)
+
+---
+
+## Zero-config 60-second start
+
+> This is the **fastest** path: runs everything with mock externals (no Registry contract, no
+> Trustless Work key, no OZ Channels key needed) and 4 Docker containers + Webhook receiver +
+> App. Good for exploring the Swagger UI, running curl walkthroughs, and testing the Worker +
+> outbox pattern end-to-end.
+
+```bash
+# 1) Install deps + spin up containers (Stellar Quickstart, Redis, Postgres, Prometheus, Grafana)
+cd TrustGate
+npm ci
+docker compose -f docker-compose.yml -f docker-compose.observability.yml up -d
+
+# 2) Generate throwaway admin keypair (write down SK + PK printed)
+node -e "const s=require('@stellar/stellar-sdk');const k=s.Keypair.random();console.log('ADMIN_SECRET='+k.secret());console.log('MARKETPLACE_WALLET='+k.publicKey())"
+
+# 3) Start marketplace (100% functional with in-memory stubs — no external creds needed)
+ADMIN_SECRET=SBVZ... MARKETPLACE_WALLET=GCLZ... NETWORK=local MOCK_EXTERNALS=true npm run start:dev
+```
+
+**Result in 60 s:**
+- App + Swagger UI redirect on `http://localhost:3000/`
+- 5 localhost agents healthy (table below)
+- Full curl walkthrough in [§ Example: full lifecycle via curl](#example-full-lifecycle-via-curl)
+  works against the mock stubs
+
+> **Need the real on-chain path?** Continue to
+> [Quick start (local network)](#quick-start-local-network) +
+> [Running against real Stellar testnet](#running-against-real-stellar-testnet) (they include
+> Registry/Escrow deploys and require real credentials).
+
+---
+
+## 5 localhost agents quick links
+
+Once the stack is up, every agent below has a valid HTTP root or health endpoint (no 404s).
+
+| # | Agent | URL (clickable) | Default port | Health endpoint |
+|---|-------|-----------------|--------------|-----------------|
+| 1 | **TrustGate App + Worker (marketplace API + Swagger UI)** | [http://localhost:3000](http://localhost:3000) | `3000` | `GET /health` → `{"status":"ok"}`; `GET /` auto-redirects → `/api-docs` (Swagger UI) |
+| 2 | **Prometheus (scrapes :3000/metrics + alert rules)** | [http://localhost:9090](http://localhost:9090) | `9090` | `GET /-/healthy` → `Prometheus Server is Healthy.` |
+| 3 | **Grafana (dashboards — Auth Overview / Worker Overview)** | [http://localhost:3001](http://localhost:3001) | `3001` | `GET /api/health` → 200 (log in as anonymous Viewer) |
+| 4 | **Stellar Standalone Quickstart (RPC + Horizon + Core + Friendbot)** | [http://localhost:8000/health](http://localhost:8000/health) | `8000` | `GET /health` → `{database_connected, core_up, core_synced}`; Soroban RPC under `:8000/soroban/rpc`; faucet `GET :8000/friendbot?addr=<G...>` gives 10 000 XLM |
+| 5 | **Webhook Receiver Agent (event delivery target)** | [http://localhost:4000](http://localhost:4000) | `4000` | `GET /` auto-redirects → `/health` → `{"status":"ok"}`; accepts `POST /webhooks/result-published` (204 on success) |
+
+Launching agent 5 explicitly (optional — runs as its own process):
+```bash
+npm run webhook:receiver     # listens on PORT 4000 by default, prints every webhook event as JSON
+```
+
+Integrating the Webhook agent into the running marketplace app:
+```bash
+RESULT_PUBLISHED_WEBHOOK_URL=http://localhost:4000/webhooks/result-published \
+ADMIN_SECRET=SBVZ... MARKETPLACE_WALLET=GCLZ... MOCK_EXTERNALS=true npm run start:dev
+```
+
+> **TTL / Escrow Contract Lifecycle agent:** runs **inside** Agent 1 (App :3000/metrics, gauge
+> `tg_escrow_contract_instance_ttl_days`) whenever `ESCROW_CONTRACT_ID` is set. To run it as a
+> dedicated 6th standalone agent:
+> ```bash
+> PORT=9465 NETWORK=testnet ESCROW_CONTRACT_ID=CB3XT...L7YLH npm run metrics:ttl:serve
+> ```
+
+---
 
 ## Stack
 
@@ -75,7 +196,7 @@ asynchronous processing.
 
 ### System diagram
 
-[[diagram: TrustGate arquitetura completa. Componentes: (1) Usuários: Requester Browser + Freighter wallet, Executor Browser + Freighter. (2) Off-chain API: Express rotas /auth /executors /tasks /bids /metrics. Camadas: SignatureAuth middleware, Controllers, Services (TaskService, BidService, EscrowService, MppChargeService, X402PaymentService, AuthController), Repositories (TaskRepository, BidRepository, OutboxRepository). (3) Persistência: Postgres (tabelas tasks, bids, outbox_events, event_consumptions, executors), Redis Streams (tg:events, consumer group tg-workers, XLEN/XPENDING). (4) Worker: tick loop a cada WORKER_POLL_MS, handlers por evento (task_completion_requested → releaseMilestone Trustless Work, webhook pós-resultado, outbox publisher). (5) Observabilidade: /metrics → Prometheus scrape → Grafana dashboards → alert rules, /health endpoints. (6) On-chain e externos: Stellar Soroban RPC + Horizon (Registry contract, USDC SAC), Trustless Work API (bid collateral + release), OZ Channels x402 facilitator, Webhook externo opcional. Setas: Requester/Executor -> signed fetch (x-tg-* headers + idempotency-key) -> API. API -> Postgres (transação outbox_events atômica). API -> Redis Streams (publisher marca processed_at). Worker -> XREADGROUP/XAUTOCLAIM -> handlers -> Trustless Work / Webhook / Postgres event_consumptions (idempotência). Prometheus -> scrape app:3000/metrics, Grafana -> Prometheus datasource + dashboards provisionados.]]
+[[diagram: TrustGate complete architecture. Components: (1) Users: Requester Browser + Freighter wallet, Executor Browser + Freighter. (2) Off-chain API: Express routes /auth /executors /tasks /bids /metrics. Layers: SignatureAuth middleware, Controllers, Services (TaskService, BidService, EscrowService, MppChargeService, X402PaymentService, AuthController), Repositories (TaskRepository, BidRepository, OutboxRepository). (3) Persistence: Postgres (tables tasks, bids, outbox_events, event_consumptions, executors), Redis Streams (tg:events, consumer group tg-workers, XLEN/XPENDING). (4) Worker: tick loop every WORKER_POLL_MS, handlers per event (task_completion_requested → releaseMilestone Trustless Work, post-result webhook, outbox publisher). (5) Observability: /metrics → Prometheus scrape → Grafana dashboards → alert rules, /health endpoints. (6) On-chain & external: Stellar Soroban RPC + Horizon (Registry contract, USDC SAC), Trustless Work API (bid collateral + release), OZ Channels x402 facilitator, optional external Webhook. Arrows: Requester/Executor -> signed fetch (x-tg-* headers + idempotency-key) -> API. API -> Postgres (atomic outbox_events transaction). API -> Redis Streams (publisher marks processed_at). Worker -> XREADGROUP/XAUTOCLAIM -> handlers -> Trustless Work / Webhook / Postgres event_consumptions (idempotency). Prometheus -> scrape app:3000/metrics, Grafana -> Prometheus datasource + provisioned dashboards.]]
 
 ```mermaid
 flowchart LR
@@ -133,6 +254,81 @@ flowchart LR
   API --> MET
 ```
 
+### 5 localhost agents dashboard
+
+This diagram shows every long-running process after `docker compose up` +
+`npm run start:dev` + `npm run webhook:receiver`. Each agent's public port,
+health endpoint, and purpose are explicit. Arrows are data/signal flow, not
+HTTP call order.
+
+```mermaid
+flowchart TB
+  subgraph U["👤 User / Operator / dApp browser"]
+    Browser["Chrome / Firefox<br>(Freighter wallet)"]
+    Curl["Terminal (curl / httpie)<br>for walkthroughs"]
+  end
+
+  Browser -->|"302 / → /api-docs Swagger UI"| A1
+  Curl -->|"signed requests x-tg-*"| A1
+  Browser -->|"dashboards, alerts"| PROM
+  Browser -->|"time-series panels"| GRAF
+  Browser -->|"Horizon explorer / Soroban RPC"| STLR
+  Browser -->|"inspect webhook payloads"| WBH
+
+  subgraph A1["🟢 Agent 1 — TrustGate App + Worker (3000)"]
+    direction LR
+    A1_SWAGGER["Swagger UI<br>/api-docs"]
+    A1_HEALTH["GET /health ✅ 200<br>redirect GET / → /api-docs"]
+    A1_METRICS["GET /metrics<br>prom-client gauges/counters"]
+    A1_WORKER["Worker tick loop<br>Redis Streams XREADGROUP"]
+    A1_SWAGGER --- A1_HEALTH --- A1_METRICS --- A1_WORKER
+  end
+
+  subgraph PROM["🔵 Agent 2 — Prometheus (9090)"]
+    direction LR
+    P_HLT["GET /-/healthy ✅"]
+    P_SCRAPE["scrape every 15 s:<br>:3000/metrics"]
+    P_RULES["rules:<br>trustgate-auth,<br>trustgate-worker"]
+    P_HLT --- P_SCRAPE --- P_RULES
+  end
+
+  subgraph GRAF["🟣 Agent 3 — Grafana (3001)"]
+    direction LR
+    G_HLT["GET /api/health ✅"]
+    G_AUTH["dash: TrustGate Auth Overview"]
+    G_WORK["dash: TrustGate Worker Overview"]
+    G_HLT --- G_AUTH --- G_WORK
+  end
+
+  subgraph STLR["⭐ Agent 4 — Stellar Quickstart (8000)"]
+    direction LR
+    S_HLT["GET /health ✅<br>db, core, synced"]
+    S_RPC["POST /soroban/rpc<br>Soroban 22.x"]
+    S_FRND["GET /friendbot?addr=G…<br>10 000 XLM faucet"]
+    S_HLT --- S_RPC --- S_FRND
+  end
+
+  subgraph WBH["🟠 Agent 5 — Webhook Receiver (4000)"]
+    direction LR
+    W_HLT["GET / → 302 /health ✅"]
+    W_POST["POST /webhooks/result-published → 204<br>logs JSON to stdout"]
+    W_HLT --- W_POST
+  end
+
+  %% Internal service interactions
+  A1_WORKER -->|"Registry + Escrow calls"| S_RPC
+  A1_METRICS -->|"scrape pull"| P_SCRAPE
+  P_RULES -->|"PromQL data source"| G_WORK
+  P_RULES -->|"PromQL data source"| G_AUTH
+  A1_WORKER -->|"result_published event"| W_POST
+
+  style A1 fill:#d8f5dc,stroke:#2e7d32
+  style PROM fill:#d9ecff,stroke:#1565c0
+  style GRAF fill:#ece0ff,stroke:#6a1b9a
+  style STLR fill:#fff4d6,stroke:#e65100
+  style WBH fill:#ffe1d9,stroke:#bf360c
+```
+
 ### Full lifecycle sequence
 
 ```mermaid
@@ -145,6 +341,7 @@ sequenceDiagram
   participant RS as Redis Streams
   participant W as Worker
   participant OZ as OZ Channels
+  participant WH as Webhook Agent :4000
   Req->>API: 1. POST /auth/nonce { publicKey }
   API-->>Req: { timestamp, nonce }  (stored in Redis, TTL 600s, one-time)
   Req->>API: 2. POST /tasks [x-tg-* signed, Idempotency-Key]
@@ -165,8 +362,11 @@ sequenceDiagram
   API-->>Adm: 200
   Exe->>API: 6. POST /executor/tasks/:id/result [x-tg-* signed]
   API->>PG: UPDATE task = RESULT_PUBLISHED
-  API->>RS: XADD result_published (optional webhook)
+  API->>RS: XADD result_published (Outbox → Worker → webhook)
   API-->>Exe: 200
+  W->>RS: XREADGROUP → result_published (if WEBHOOK_URL is set)
+  W->>PG: INSERT event_consumptions (skip if exists = idempotency)
+  W->>WH: POST /webhooks/result-published {taskId, executor} → 204
   Req->>OZ: 7. x402 pay GET /executor/tasks/:id/result (USDC)
   OZ-->>API: forward with charge proof
   API-->>Req: deliverable bytes
@@ -220,6 +420,48 @@ group size (typically 1–16 workers), so the per-consumer label dimension in
 `tg_stream_pending_consumer{stream,group,consumer}` is always low-cardinality
 and safe to ship to Prometheus.
 
+### Zero-config 60-second bootstrap pipeline
+
+This diagram corresponds to the 3-step
+[Zero-config 60-second start](#zero-config-60-second-start) on a fresh
+sandbox/machine. Nodes are ordered top→bottom, left→right. Failures in any
+step short-circuit to a labeled exceptions.
+
+```mermaid
+flowchart TD
+  START([Terminal: cd TrustGate]) --> A1["1. npm ci<br/>installs deps (~15 s)"]
+  A1 --> A2["2. docker compose up -d<br/><i>2 files: docker-compose.yml +<br/>docker-compose.observability.yml</i>"]
+  A2 --> P1["⭐ Stellar Quickstart<br/>Docker container"]
+  A2 --> P2["🔵 Prometheus<br/>Docker container"]
+  A2 --> P3["🟣 Grafana<br/>Docker container"]
+  A2 --> P4["🟥 Redis<br/>Docker container"]
+  A2 --> P5["🐘 Postgres<br/>Docker container"]
+
+  P1 --> HLT1{{"health :8000 ✅"}}
+  P2 --> HLT2{{"health :9090 ✅"}}
+  P3 --> HLT3{{"health :3001 ✅"}}
+  A1 --> A3["3. node one-liner<br/>@stellar/stellar-sdk Keypair.random()<br/>ADMIN_SECRET=S…<br/>MARKETPLACE_WALLET=G…"]
+  A3 --> A4["4. npm run start:dev<br/><i>ts-node-dev src/server.ts</i><br/><b>ADMIN_SECRET=… NETWORK=local<br/>MOCK_EXTERNALS=true</b>"]
+  A4 --> Agent1["🟢 Agent 1 App + Worker :3000"]
+  Agent1 --> HLT4{{"/health 200 ✅"}}
+  Agent1 --> HLT5{{"GET / → 302 /api-docs ✅"}}
+  Agent1 --> HLT6[":3000/metrics → scraped by Agent 2 Prometheus"]
+  A4 --> A5["5. npm run webhook:receiver<br/><i>scripts/webhook-receiver.ts</i><br/>(separate process)"]
+  A5 --> Agent5["🟠 Agent 5 Webhook :4000"]
+  Agent5 --> HLT7{{"/health 200 ✅<br/>GET / → 302 /health"}}
+  Agent5 --> HLT8{{"POST /webhooks/result-published → 204"}}
+  Agent1 -->|"Outbox Worker tick"| WEBHOOK_OUT["result_published event via<br/>Worker forwards JSON to Agent 5"]
+
+  %% Status aggregation node
+  DONE(("5 agents healthy 5/5 ✅"))
+  HLT1 --> DONE
+  HLT2 --> DONE
+  HLT3 --> DONE
+  HLT4 --> DONE
+  HLT7 --> DONE
+  style DONE fill:#c8e6c9,stroke:#2e7d32
+```
+
 ### Signed request flow (on testnet/pubnet)
 
 ```mermaid
@@ -257,11 +499,45 @@ runbook.
 
 ## Quick start (local network)
 
+### 0. Generate dev wallet (Optional, 30s — step-by-step to avoid leaking SK..)
+
+```bash
+# Encrypts and saves to ~/.trustgate/dev-wallet-v1.enc (permissions 0600).
+# Generates Ed25519 keypair + requests 10,000 XLM from Friendbot on testnet.
+npm run wallet:setup:testnet
+# OR if running standalone local only (no real Friendbot):
+# npm run wallet:setup:local
+```
+
+Expected output: PK = `GD...` (public key). Later, if you need to view the SK.. safely:
+```bash
+npm run wallet:decrypt -- ~/.trustgate/dev-wallet-v1.enc --print-secret
+```
+
+Paste the public key into `.env`:
+```bash
+MARKETPLACE_WALLET=GD...YOUR_PUBLIC_KEY_HERE
+# MARKETPLACE_SECRET_KEY=...  # use: read -s _sk ; export MARKETPLACE_SECRET_KEY="$_sk" ; unset _sk
+```
+
+### 1. Spin up stack + run marketplace
+
 ```bash
 npm install
 docker compose up -d          # Stellar Quickstart (standalone network) + Redis + Postgres
 npm run deploy:registry       # deploys Registry contract, writes REGISTRY_CONTRACT_ID to .env
 npm run start:dev             # http://localhost:3000
+```
+
+### Docker (recommended shortcuts)
+```bash
+# Production / final image build:
+npm run docker:build     # builds Dockerfile v2.0 (builder + non-root runner, HEALTHCHECK, tini)
+npm run docker:up        # docker compose up -d (stellar + redis + postgres + app)
+npm run docker:health    # checks healthchecks of all 4 containers
+
+# Development with hot-reload + debug port 9229 (ts-node-dev):
+npm run docker:dev       # docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 ```
 
 `deploy:registry` also generates and Friendbot-funds a throwaway
@@ -378,7 +654,7 @@ skipped**. Internal logic coverage (mock-based) is 111 tests / 31 suites.
 | # | Skipped test suite | What it exercises | Prerequisites to enable | Notes |
 |---|---|---|---|---|
 | 1 | `src/integration/sorobanRegistry.test.ts` | `registerExecutor()` + `listExecutors()` + `isExecutorRegistered()` calls to a **live deployed Soroban Registry contract** on Stellar testnet/standalone. | 1. Running Stellar Quickstart node (Soroban RPC). 2. `REGISTRY_CONTRACT_ID` env var pointing to a deployed Registry. 3. Admin keypair with XLM for gas. | If you want to re-enable: edit the file, change `describe.skip` → `describe`, set `MOCK_EXTERNALS=false`, and ensure the RPC is reachable. |
-| 2 | `src/integration/trustlessWorkEscrow.test.ts` | End-to-end escrow operations (confiscate/release collateral, milestone triggers) against the **live Trustless Work SaaS API**. | 1. `TRUSTLESS_WORK_API_KEY` env var set and valid. 2. Network egress to `blocks.trustlesswork.com`. 3. `MOCK_EXTERNALS=false`. | See [Escrow strategy](#escrow-provider-strategy) for SaaS vs self-hosted trade-offs. |
+| 2 | `src/integration/trustlessWorkEscrow.test.ts` | End-to-end escrow operations (confiscate/release collateral, milestone triggers) against the **live Trustless Work SaaS API**. | 1. `TRUSTLESS_WORK_API_KEY` env var set and valid. 2. Network egress to `blocks.trustlesswork.com`. 3. `MOCK_EXTERNALS=false`. | See the `ESCROW_IMPLEMENTATION` row in [Environment variables](#environment-variables) (SaaS vs `mock` vs `ourown` Option C) and [ADR 0002](file:///home/jistriane/TrustGate/TrustGate/docs/adr/0002-on-chain-strategy-registry-immutable-escrow-saas.md) for the 15-day exit strategy trade-offs. |
 | 3 | `src/integration/stellarSacWithdraw.test.ts` | USDC SAC token mint/transfer/withdraw via a live Stellar asset contract. | 1. Running RPC node. 2. `USDC_ASSET_CONTRACT_ID` env var. 3. Funded test keypair with XLM + USDC. | Mostly used for testnet debugging. |
 | 4 | `src/integration/ozChannelsFacilitator.test.ts` | OZ Channels facilitator payout path with a live facilitator key. | 1. `OZ_API_KEY` env var set. 2. Network egress to OpenZeppelin Channels API. 3. `MOCK_EXTERNALS=false`. | Skip in CI unless you have a stage facilitator key. |
 
@@ -408,15 +684,37 @@ in-Compose-network hostnames.
 
 ## Running against real Stellar testnet
 
+### Official Deploy (SDF Testnet — 06/08/2026)
+
+Contracts and wallets are already **deployed and validated** with storage already initialized (AlreadyInitialized #15 confirmed on both). Copy these values to your `.env.testnet`:
+
+| Asset | Address / Value | Stellar Expert Link |
+|---|---|---|
+| **Admin / Marketplace Wallet** | `GAE7YLEM2X2WJQVR6ZOM6TYTBRZ5Y7T3I2VZPN2XJKQSLH2C5CDPVLPI` | [🔗 Explorer](https://stellar.expert/explorer/testnet/account/GAE7YLEM2X2WJQVR6ZOM6TYTBRZ5Y7T3I2VZPN2XJKQSLH2C5CDPVLPI) |
+| **Registry v2 (Immutable)** | `CAC752B34ZYHHDTSHDVVHY3IX2R2UQHAN4AY5B57NZUY23XCYIEXSGPP` | [🔗 Explorer](https://stellar.expert/explorer/testnet/contract/CAC752B34ZYHHDTSHDVVHY3IX2R2UQHAN4AY5B57NZUY23XCYIEXSGPP) |
+| **Escrow Option C (ADR0008)** | `CB3XTPXXXF4JSHZBY4S7F3BFD4JZPUVNHDWSDQ7L2JKDUWSK7VBL7YLH` | [🔗 Explorer](https://stellar.expert/explorer/testnet/contract/CB3XTPXXXF4JSHZBY4S7F3BFD4JZPUVNHDWSDQ7L2JKDUWSK7VBL7YLH) |
+| **SAC USDC Circle (canonical)** | `CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA` | [🔗 Explorer](https://stellar.expert/explorer/testnet/contract/CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA) |
+| **WASM Hash Escrow** | `f89ae648…` (release, 14 KB) | — |
+| **Classic USDC Issuer** | `GBBDS5BEUTSEVQHN2GJ4H7VYJ5B2Q2XU4VVC7EERKMOV5QQQHMK6FLA5` | [🔗 Explorer](https://stellar.expert/explorer/testnet/account/GBBDS5BEUTSEVQHN2GJ4H7VYJ5B2Q2XU4VVC7EERKMOV5QQQHMK6FLA5) |
+
+**Smoke tests on-chain:**
+```bash
+npm run testnet:smoke-registry   # register → is_registered → get → unregister (Registry v2)
+npm run testnet:smoke-escrow     # create_escrow 2-signer → SAC#10 InsufficientBalance (pipeline proof)
+```
+
+**Quick setup (optional re-deploy — skip if using the addresses above):**
 ```bash
 npm run testnet:setup            # generates + Friendbot-funds admin/requester/executor accounts,
                                   # adds real Circle USDC trustlines, writes .env.testnet
 npm run testnet:deploy-registry  # deploys the Registry contract to testnet
+npm run deploy:escrow:testnet    # deploys Escrow + initialize 3 args (ADR0007 / ADR0008)
 ```
 
 The one step that can't be scripted: fund the requester with real (fictitious)
 testnet USDC via the [Circle faucet](https://faucet.circle.com) — it's a
-captcha-gated web form. The setup script prints the exact address to paste in.
+captcha-gated web form. Current address:
+`GBI6OZO2DO3QYOQETUJ2NFX4DI233L5ELRVFAZZMU4FWHDYMQM6BQVQ4`
 
 For signed-request validation against the real stack, run
 `scripts/validate-signed-requests.ts` (uses `NETWORK=testnet` env) or the
@@ -556,13 +854,13 @@ Freighter quick checklist:
 - If you run the API via Docker, your dApp must call the host URL (for
   example `http://localhost:3000`), not the in-compose hostname.
 
-1) Start Docker (local network + observability recommended):
+1. Start Docker (local network + observability recommended):
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.observability.yml up --build -d
 ```
 
-2) From your React app (Freighter via Stellar Wallets Kit), call:
+1. From your React app (Freighter via Stellar Wallets Kit), call:
 
 - `POST /auth/nonce` to get `{ timestamp, nonce }`
 - `POST /auth/signed-smoke` with the signature headers and a body like
@@ -811,11 +1109,11 @@ it in your PR description.
 
 | ID | Title | Status |
 |----|-------|--------|
-| 0001 | [Outbox + Worker idempotente (Redis Streams) e conclusão assíncrona com Trustless Work](file:///home/jistriane/TrustGate/TrustGate/docs/adr/0001-outbox-worker-idempotency.md) | ✅ Accepted 2026-08-04 |
-| 0002 | [Estratégia on-chain: Registry Soroban Immutable + Escrow via SaaS Trustless Work](file:///home/jistriane/TrustGate/TrustGate/docs/adr/0002-on-chain-strategy-registry-immutable-escrow-saas.md) | ✅ Accepted 2026-08-05 |
+| 0001 | [Idempotent Outbox + Worker (Redis Streams) and async completion with Trustless Work](file:///home/jistriane/TrustGate/TrustGate/docs/adr/0001-outbox-worker-idempotency.md) | ✅ Accepted 2026-08-04 |
+| 0002 | [On-chain strategy: Immutable Soroban Registry + Escrow via Trustless Work SaaS](file:///home/jistriane/TrustGate/TrustGate/docs/adr/0002-on-chain-strategy-registry-immutable-escrow-saas.md) | ✅ Accepted 2026-08-05 |
 
 To add a new ADR, copy `0001-*.md` as `0003-*.md`, fill in the
-`Contexto / Decisão / Consequências / Alternativas consideradas` sections,
+`Context / Decision / Consequences / Alternatives considered` sections,
 and reference it from this table.
 
 ## Glossary

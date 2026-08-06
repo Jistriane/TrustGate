@@ -2,6 +2,27 @@
 
 This document is a practical runbook for diagnosing issues using Prometheus metrics exposed at `GET /metrics`.
 
+---
+
+### Appendix — Deployed Contracts (Stellar Testnet SDF 06/08/2026)
+
+Contracts **officially deployed** on Testnet SDF (Soroban protocol 27). Quick reference for any on-call engineer to validate on-chain storage during an incident.
+
+| Asset | Address / Contract ID | Stellar Expert Explorer Link (Testnet) | Automatic TTL |
+|---|---|---|---|
+| **Admin / Marketplace Wallet** (deployer; release_signer; default pauser; confiscation authority) | `GAE7YLEM2JZD7UVHFNR3CGJJYPUNZOOAQSWVP7TKK6KRDFXBUCLPVLPI` | 🔗 [account](https://stellar.expert/explorer/testnet/account/GAE7YLEM2JZD7UVHFNR3CGJJYPUNZOOAQSWVP7TKK6KRDFXBUCLPVLPI) | ~14d default Friendbot; extend via `stellar contract extend` |
+| **Registry v2 Contract** (`__version = 2`; 4.05 KB WASM) | `CAC752B3PPX2ZXM7DTDWJL5SGUWF2GLZXVCCHKC2ZIV3NSJZISBXSGPP` | 🔗 [contract](https://stellar.expert/explorer/testnet/contract/CAC752B3PPX2ZXM7DTDWJL5SGUWF2GLZXVCCHKC2ZIV3NSJZISBXSGPP) | Instance storage ~14d default; writes refresh automatically |
+| **Immutable Escrow Option C** (14 KB WASM; ADR0008 hotfix `token.require_auth()` removed) | `CB3XTPXXXF4JSHZBY4S7F3BFD4JZPUVNHDWSDQ7L2JKDUWSK7VBL7YLH` | 🔗 [contract](https://stellar.expert/explorer/testnet/contract/CB3XTPXXXF4JSHZBY4S7F3BFD4JZPUVNHDWSDQ7L2JKDUWSK7VBL7YLH) | `refresh_instance_ttl()` on every write = 518,400 ledgers (~30 days). Persistent entries for each individual escrow inherit 518,400 default ledgers in `create_escrow()`. |
+| **SAC USDC Circle** (canonical SDF wrap already existed; classic issuer `GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5`) | `CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA` | 🔗 [contract](https://stellar.expert/explorer/testnet/contract/CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA) | Controlled by SDF/Circle; 7 decimals |
+| **Escrow WASM Hash** (hotfix ADR0008 applied) | `f89ae648977ff97b7eba85f4cd06d2099e0d691162020835fe4ba9976ee7cbbd` | — | |
+
+> **Fast on-chain diagnostics during P0 (any escrow incident):** validate ESCROW contract `instance` storage with smoke-test already initialized:
+> ```bash
+> stellar contract invoke --source trustgate_admin --network testnet --id CB3XTPXXXF4JSHZBY4S7F3BFD4JZPUVNHDWSDQ7L2JKDUWSK7VBL7YLH -- initialize --token CBIELTK6... --release_signer GAE7Y... --marketplace GAE7Y...
+> # Expected: Error(Contract, #15) == AlreadyInitialized = instance storage is intact.
+> ```
+
+
 ### Setup (Grafana + Prometheus)
 
 **Grafana dashboards**

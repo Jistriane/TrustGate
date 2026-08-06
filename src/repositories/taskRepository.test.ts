@@ -34,4 +34,28 @@ describe('TaskRepository', () => {
     await repo.save(taskB);
     await expect(repo.list()).resolves.toEqual([taskA, taskB]);
   });
+
+  it('listAssignedDeadlineBefore filters only ASSIGNED with deadline before cutoff', async () => {
+    const repo = new TaskRepository();
+    const future = Date.now() + 10_000;
+    const past = Date.now() - 10_000;
+    const assignedPast = makeTask({ id: 'ta-past', status: 'ASSIGNED', deadline: new Date(past).toISOString() });
+    const assignedFuture = makeTask({ id: 'ta-fut', status: 'ASSIGNED', deadline: new Date(future).toISOString() });
+    const openPast = makeTask({ id: 'to-past', status: 'OPEN', deadline: new Date(past).toISOString() });
+    await repo.save(assignedPast);
+    await repo.save(assignedFuture);
+    await repo.save(openPast);
+    const result = await repo.listAssignedDeadlineBefore(new Date().toISOString());
+    expect(result.map((t) => t.id)).toEqual(['ta-past']);
+  });
+
+  it('listAssignedDeadlineBefore accepts Date and ISO string', async () => {
+    const repo = new TaskRepository();
+    const t = makeTask({ id: 't1', status: 'ASSIGNED', deadline: new Date(Date.now() - 1000).toISOString() });
+    await repo.save(t);
+    const viaDate = await repo.listAssignedDeadlineBefore(new Date());
+    const viaIso = await repo.listAssignedDeadlineBefore(new Date().toISOString());
+    expect(viaDate).toHaveLength(1);
+    expect(viaIso).toHaveLength(1);
+  });
 });

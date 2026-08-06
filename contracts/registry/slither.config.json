@@ -1,0 +1,13 @@
+{
+  "detectors": [],
+  "exclude_paths": [
+    "target/",
+    "node_modules/",
+    "test_snapshots/",
+    ".git/"
+  ],
+  "fail_on": "none",
+  "comments": {
+    "_note": "Slither placeholder para Soroban/Rust registry. Mesmo racional do slither.config.json do escrow. Linhas reais L2.1..L2.3: cargo build release / clippy -D warnings / cargo test workspace."
+  }
+}

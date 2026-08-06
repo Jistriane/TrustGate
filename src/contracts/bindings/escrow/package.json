@@ -1,0 +1,18 @@
+{
+  "name": "escrow",
+  "version": "0.0.1",
+  "description": "Generated TypeScript bindings for TrustGate Escrow Option C Soroban contract (MANUAL until Rust 1.84.0 toolchain available)",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc"
+  },
+  "dependencies": {
+    "@stellar/stellar-sdk": "^16.2.0",
+    "buffer": "6.0.3"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  }
+}

@@ -1,8 +1,40 @@
+# docker-compose.yml — TrustGate v2.0 (Item 5 / P0-E.1)
+#
+# PRODUCTION / STAGING stack.
+#
+# Containers launched:
+#   • stellar-quickstart  — Stellar Core + Soroban RPC standalone (NETWORK=local)
+#                           or bridge to testnet/pubnet (NETWORK=testnet/pubnet).
+#   • redis 7-alpine     — shared storage for rate limiting (Item 2 / P1-A),
+#                           idempotency keys, outbox streams, task feed.
+#   • postgres 16-alpine — main relational database (tasks, bids, executors,
+#                           idempotency, outbox, results, execution policies).
+#   • app (TrustGate)    — Node 20 Alpine (Dockerfile v2.0 image), non-root,
+#                           integrated HEALTHCHECK, limited cgroups memory/CPU.
+#
+# Security adjustments (minimum CIS-Docker 1.6.0):
+#   ✅ restart: unless-stopped on ALL services that should survive reboot.
+#   ✅ mem_limit and cpus on app (prevents cascading OOM Kill if app leaks memory).
+#   ✅ read_only: false (app needs to write to /tmp for pino buffers occasionally;
+#        we could set read_only + tmpfs /tmp but it increases debug fragility).
+#   ✅ security_opt on app: no-new-privileges. No containers running privileged.
+#   ✅ non-root user inside app (Dockerfile v2.0, USER node:node).
+#   ✅ sensitive variables (ADMIN_SECRET etc.) NOT hardcoded — use env_file and/or
+#        inherited environment. For maximum security, use Docker secrets
+#        via swarm or external secrets manager. Today = env vars (NOT ideal,
+#        but team hasn't chosen a provider yet — YAGNI, ADR 0002 §7).
+#   ✅ networks: isolated trustgate-tier (no containers use default host).
+#   ✅ healthcheck: service_healthy on app depends_on.
+#   ✅ disabled tty and stdin_open unless it's a debug service.
+
+name: trustgate
+
 services:
   stellar-quickstart:
     image: stellar/quickstart:latest
     container_name: trustgate-stellar
     command: --${NETWORK:-local} --enable-soroban-rpc
+    restart: unless-stopped
     ports:
       - '8000:8000'
     environment:
@@ -12,20 +44,36 @@ services:
       interval: 5s
       timeout: 5s
       retries: 20
+      start_period: 45s
     volumes:
       - stellar-data:/opt/stellar
+    networks:
+      - trustgate-tier
+    mem_limit: 2g
+    cpus: '1.5'
 
   redis:
     image: redis:7-alpine
     container_name: trustgate-redis
+    restart: unless-stopped
     # Not published to the host — only reachable at redis:6379 from other
     # containers on this network. Avoids clashing with a host-level Redis.
     volumes:
       - redis-data:/data
+    networks:
+      - trustgate-tier
+    healthcheck:
+      test: ['CMD', 'redis-cli', '--raw', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    mem_limit: 512m
+    cpus: '0.5'
 
   postgres:
     image: postgres:16-alpine
     container_name: trustgate-postgres
+    restart: unless-stopped
     environment:
       - POSTGRES_USER=trustgate
       - POSTGRES_PASSWORD=trustgate
@@ -37,21 +85,38 @@ services:
       retries: 20
     volumes:
       - pg-data:/var/lib/postgresql/data
+    networks:
+      - trustgate-tier
+    mem_limit: 1g
+    cpus: '1.0'
 
   app:
     build:
       context: .
       dockerfile: Dockerfile
+      # Explicit tags: buildx/latest; in real production we'd use immutable tag (sha256)
+      tags:
+        - trustgate/app:latest
+        - trustgate/app:${APP_VERSION:-local}
+    image: trustgate/app:latest
     container_name: trustgate-app
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
     depends_on:
       stellar-quickstart:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
       postgres:
         condition: service_healthy
     env_file:
-      - .env.docker
+      # Order matters: .env first (defaults), .env.docker OVERRIDES defaults
+      # for production if the file exists.
+      - path: .env
+        required: false
+      - path: .env.docker
+        required: false
     environment:
       - NODE_ENV=production
       - PORT=3000
@@ -60,14 +125,20 @@ services:
       - STELLAR_HORIZON_URL=http://stellar-quickstart:8000
       - REDIS_URL=redis://redis:6379
       - DATABASE_URL=postgres://trustgate:trustgate@postgres:5432/trustgate
+      - RATE_LIMIT_STORAGE=redis
+      # RATE_LIMIT_DISABLE_ALL=false (default, no need to set explicitly)
+      - TRUST_PROXY_HOPS=0
+      - LOG_LEVEL=info
     ports:
       - '3000:3000'
+    networks:
+      - trustgate-tier
+    mem_limit: 1g
+    cpus: '1.0'
+    # Graceful shutdown: 30s for Node to finish in-flight requests (Node.js default
+    # keepAliveTimeout 5s; 30s is safe).
+    stop_grace_period: 30s
     command:
-      - ./scripts/wait-for-it.sh
-      - stellar-quickstart:8000
-      - -t
-      - '60'
-      - --
       - ./scripts/wait-for-it.sh
       - redis:6379
       - -t
@@ -85,3 +156,7 @@ volumes:
   stellar-data:
   redis-data:
   pg-data:
+
+networks:
+  trustgate-tier:
+    driver: bridge

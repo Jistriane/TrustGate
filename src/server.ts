@@ -17,6 +17,7 @@ import { PgEventConsumptionRepository } from './repositories/eventConsumptionRep
 import { PgTaskRepository } from './repositories/taskRepository';
 import { PgBidRepository } from './repositories/bidRepository';
 import { EscrowService } from './services/escrowService';
+import { EscrowTtlMonitorService } from './services/escrowTtlMonitorService';
 import { OutboxService } from './services/outboxService';
 import { WebhookService } from './services/webhookService';
 import { isTransientNetworkError, withRetry } from './utils/retry';
@@ -106,6 +107,24 @@ async function main(): Promise<void> {
 
   const timeoutService = app.get('timeoutService') as TimeoutService;
   timeoutService.schedule();
+
+  const escrowContractId = process.env.ESCROW_CONTRACT_ID;
+  if (escrowContractId && process.env.DISABLE_TTL_MONITOR !== 'true') {
+    const net = (process.env.NETWORK ?? 'local') as 'local' | 'testnet' | 'pubnet';
+    new EscrowTtlMonitorService({
+      network: net,
+      contractId: escrowContractId,
+      ledgerSeconds: 5,
+      defaultFallbackDays: 30,
+      cronExpression: '0 */6 * * *',
+    }).schedule();
+    logger.info(
+      { network: net, contractIdPrefix: escrowContractId.slice(0, 8) + '…' },
+      'EscrowTtlMonitorService scheduled — gauge tg_escrow_contract_instance_ttl_days no /metrics app:3000.',
+    );
+  } else if (!escrowContractId) {
+    logger.info('ESCROW_CONTRACT_ID not set; EscrowTtlMonitorService not scheduled.');
+  }
 
   if (process.env.DATABASE_URL && process.env.REDIS_URL && process.env.WORKER_ENABLED !== 'false') {
     const pool = getDbPool();

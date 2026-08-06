@@ -38,6 +38,17 @@ describe('Marketplace E2E flow (mocked)', () => {
         if (!info) throw new Error('not registered');
         return info;
       },
+      async updateExecutor(executor: Keypair, profileUri: string) {
+        const pk = executor.publicKey();
+        const existing = registered.get(pk);
+        if (!existing) throw new Error('not registered');
+        registered.set(pk, { ...existing, profile_uri: profileUri, updated_at_ledger: Date.now() });
+      },
+      async unregisterExecutor(executor: Keypair) {
+        const pk = executor.publicKey();
+        if (!registered.has(pk)) throw new Error('not registered');
+        registered.delete(pk);
+      },
     };
   }
 

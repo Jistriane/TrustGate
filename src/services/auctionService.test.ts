@@ -113,4 +113,33 @@ describe('AuctionService.selectWinner', () => {
 
     expect(result.winningBid.id).toBe('bid-pending');
   });
+
+  it('P1-3 PAUSE_AUCTION=true env override → selectWinner throws AuctionPausedError without writing anything', async () => {
+    const taskRepository = new TaskRepository();
+    const bidRepository = new BidRepository();
+    const auctionPaused = new AuctionService(taskRepository, bidRepository, { PAUSE_AUCTION: 'true' });
+    const task = makeTask();
+    await taskRepository.save(task);
+    const bid = makeBid({ id: 'bid-blocked', amountStroops: 1_000n });
+    await bidRepository.save(bid);
+
+    await expect(auctionPaused.selectWinner(task.id)).rejects.toThrow(/PAUSE_AUCTION=1/);
+    const t = await taskRepository.findById(task.id);
+    expect(t?.status).toBe('OPEN');
+    const b = await bidRepository.findById('bid-blocked');
+    expect(b?.status).toBe('PENDING');
+  });
+
+  it('P1-3 PAUSE_AUCTION=false explicit → selectWinner works normally (no blocking)', async () => {
+    const taskRepository = new TaskRepository();
+    const bidRepository = new BidRepository();
+    const auctionOk = new AuctionService(taskRepository, bidRepository, { PAUSE_AUCTION: 'false' });
+    const task = makeTask();
+    await taskRepository.save(task);
+    const bid = makeBid({ id: 'bid-ok', amountStroops: 5_000_000_000n });
+    await bidRepository.save(bid);
+    const result = await auctionOk.selectWinner(task.id);
+    expect(result.winningBid.id).toBe('bid-ok');
+    expect(result.task.status).toBe('ASSIGNED');
+  });
 });

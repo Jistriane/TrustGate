@@ -1,8 +1,36 @@
+# Files and folders that NEVER enter the build context (saves time and size:
 node_modules
 dist
+build
+coverage
 npm-debug.log
+yarn-error.log
+.pnpm-debug.log
+
+# Git
 .git
 .gitignore
+.github
+
+# Secrets and local files
 .env
 .env.*
-*.md
+!.env.example  # (we keep .env.example only as a template, it is NOT loaded at runtime
+
+# Documentation at runtime? — keep docs/ in build context (users sometimes access via docker exec).
+# We keep docs/ in the build (it's small). Only specific root loose files are excluded:
+/*.md
+.DS_Store
+.vscode
+.idea
+
+# Soroban contract build outputs (WASM — very large, go to separate contract build images if needed.
+contracts/*/target
+contracts/target
+
+# IDE e2e/cache files
+.cache
+.temp
+tmp
+.rollup.cache
+.jest

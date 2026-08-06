@@ -102,3 +102,33 @@ export const tgWebhookFailedPermanentTotal = new Counter({
   labelNames: ['event_type', 'last_status_class'] as const,
   registers: [metricsRegistry],
 });
+
+export const tgClaimTimeoutAttemptsTotal = new Counter({
+  name: 'tg_claim_timeout_attempts_total',
+  help: 'Total number of claim_timeout RPC attempts triggered by TimeoutService.runClaimTimeoutPass worker cron, by result category: success / claim_too_early (on-chain ClaimTooEarly ledger < 14d) / error (any other on-chain or network error).',
+  labelNames: ['result'] as const,
+  registers: [metricsRegistry],
+});
+
+export const tgEscrowContractInstanceTtlDays = new Gauge({
+  name: 'tg_escrow_contract_instance_ttl_days',
+  help: 'Soroban instance storage TTL calculated in days (ADR 0004 §2). Updated every worker.cron (6h). When < 60 days → warning alert; < 30 days → critical P0: run soroban contract extend urgently.',
+  registers: [metricsRegistry],
+});
+
+/**
+ * P2-8 V16.
+ * Histogram/Counter for TTL fetch QUALITY.
+ *   method = fetch:json        → successful JSON parse of soroban contract fetch --json.
+ *   method = fetch:empty       → empty stdout (RPC returned nothing).
+ *   method = status:fallback:518_400 → soroban network status ledger parse + 518400 ledgers ~30d fallback estimate.
+ *   method = unavailable       → 2 methods failed; we use defaultFallbackDays via logger warn.
+ * SRE can alert in PromQL: rate(tg_escrow_ttl_fetch_total{method!="fetch:json"}[24h]) > 0
+ *   to know if JSON parsing has started failing continuously.
+ */
+export const tgEscrowTtlFetchTotal = new Counter({
+  name: 'tg_escrow_ttl_fetch_total',
+  help: 'Number of TTL fetch method calls categorized by method. Useful for SRE to detect gradual degradation (fallback 518_400 being used instead of real JSON fetch).',
+  labelNames: ['method'] as const,
+  registers: [metricsRegistry],
+});

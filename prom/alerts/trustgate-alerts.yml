@@ -109,7 +109,59 @@ groups:
           severity: critical
         annotations:
           summary: "TrustGate outbox publish failures (critical)"
-          description: "Outbox publish failures exceed 1/s for 5m. Event delivery is likely disrupted."
+          description: "Outbox publish failures exceed 1/5min for 5m. Redis may be down or stream invalid. Delivery disrupted."
+
+      - alert: TrustGateOutboxUnprocessedBacklogWarning
+        expr: tg_outbox_unprocessed > 1000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "TrustGate outbox unprocessed rows high (warning)"
+          description: "Outbox unprocessed rows > 1000 for 10m. Worker consumption may be lagging. Check PAUSE_WORKER_CONSUMPTION flag and Redis Streams XLEN."
+
+      - alert: TrustGateOutboxUnprocessedBacklogCritical
+        expr: tg_outbox_unprocessed > 10000
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "TrustGate outbox unprocessed rows CRITICAL"
+          description: "Outbox unprocessed rows > 10,000 for 5m. Async delivery delayed by > 30min. Trigger P1 incident (docs/incident-response-runbook.md)."
+
+      - alert: TrustGateClaimTimeoutTooEarlyRatioWarning
+        expr: |
+          (
+            sum(rate(tg_claim_timeout_attempts_total{result="claim_too_early"}[1h]))
+            /
+            sum(rate(tg_claim_timeout_attempts_total[1h]))
+          ) > 0.20
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "TrustGate claim_timeout claim_too_early ratio > 20% (ADR 0006 trigger)"
+          description: "ClaimTooEarly rate > 20% for 1h. Off-chain heuristic bid.created_at diverges too much from on-chain created_at_ledger. ADR 0006 §3.2 mandatory: migrate to real indexer (The Graph / Subgraph) or fallback to individual created_at_ledger lookup via RPC."
+
+  - name: trustgate-contract-lifecycle
+    rules:
+      - alert: TrustGateEscrowContractInstanceTtlLowWarning
+        expr: tg_escrow_contract_instance_ttl_days < 60
+        for: 1d
+        labels:
+          severity: warning
+        annotations:
+          summary: "TrustGate escrow contract instance TTL < 60 days (ADR 0004)"
+          description: "Soroban instance storage for escrow contract expires in less than 60 days. Run `soroban contract extend` to extend TTL immediately (see ADR 0004 §2). If it expires → contract instance disappears from network state (immutable → not recoverable without re-deploy)."
+
+      - alert: TrustGateEscrowContractInstanceTtlLowCritical
+        expr: tg_escrow_contract_instance_ttl_days < 30
+        for: 2h
+        labels:
+          severity: critical
+        annotations:
+          summary: "TrustGate escrow contract instance TTL < 30 days CRITICAL (P0)"
+          description: "Expiration in less than 30 days. Run soroban contract extend NOW. See ADR 0004 § rollback strategy section."
 
       - alert: TrustGateDueRetriesWarning
         expr: max(tg_worker_due_retries) by (handler) > 0

@@ -9,3 +9,11 @@ target/
 Cargo.lock
 !contracts/*/Cargo.lock
 test_snapshots/
+# Pasta local de wallet dev criptografada (Item 7 / P3-D)
+.trustgate/
+
+# Stellar Quickstart local state (pode conter identity keys / ledgers locais gerados pelo container)
+.stellar/
+
+# Build artifacts — WASMs de contratos compilados, gerados por scripts/deploy. Re-geráveis via `./build.sh` ou `soroban contract build`.
+artifacts/

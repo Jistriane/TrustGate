@@ -5,6 +5,7 @@ export interface TaskRepositoryLike {
   save(task: Task): Promise<void>;
   findById(id: string): Promise<Task | undefined>;
   list(): Promise<Task[]>;
+  listAssignedDeadlineBefore(deadlineMax: string | Date): Promise<Task[]>;
 }
 
 export class InMemoryTaskRepository implements TaskRepositoryLike {
@@ -21,6 +22,15 @@ export class InMemoryTaskRepository implements TaskRepositoryLike {
   async list(): Promise<Task[]> {
     return Array.from(this.tasks.values());
   }
+
+  async listAssignedDeadlineBefore(deadlineMax: string | Date): Promise<Task[]> {
+    const cutoff = deadlineMax instanceof Date ? deadlineMax.getTime() : new Date(deadlineMax).getTime();
+    return Array.from(this.tasks.values()).filter((task) => {
+      if (task.status !== 'ASSIGNED') return false;
+      const d = new Date(task.deadline).getTime();
+      return d < cutoff;
+    });
+  }
 }
 
 interface TaskRow {
@@ -34,6 +44,14 @@ interface TaskRow {
 
 export class PgTaskRepository implements TaskRepositoryLike {
   constructor(private readonly pool: Pool) {}
+
+  /**
+   * RECOMMENDED SQL indexes (avoid seq scan in production with >10k tasks):
+   *   create index concurrently if not exists idx_tasks_status_deadline
+   *     on tasks (status, deadline);
+   *   create index concurrently if not exists idx_tasks_created_at
+   *     on tasks (created_at desc);
+   */
 
   async save(task: Task): Promise<void> {
     await this.pool.query(
@@ -88,6 +106,28 @@ export class PgTaskRepository implements TaskRepositoryLike {
         from tasks
         order by created_at desc
       `,
+    );
+    return res.rows.map((row) => ({
+      id: row.id,
+      requesterPublicKey: row.requester_public_key,
+      reservePriceStroops: BigInt(row.reserve_price_stroops),
+      description: row.description,
+      deadline: row.deadline.toISOString(),
+      status: row.status,
+    }));
+  }
+
+  async listAssignedDeadlineBefore(deadlineMax: string | Date): Promise<Task[]> {
+    const cutoff = deadlineMax instanceof Date ? deadlineMax : new Date(deadlineMax);
+    const res = await this.pool.query<TaskRow>(
+      `
+        select id, requester_public_key, reserve_price_stroops, description, deadline, status
+        from tasks
+        where status = 'ASSIGNED'
+          and deadline < $1
+        order by deadline asc
+      `,
+      [cutoff],
     );
     return res.rows.map((row) => ({
       id: row.id,

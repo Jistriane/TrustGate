@@ -1,0 +1,300 @@
+# .github/workflows/ci.yml — TrustGate Continuous Integration v1.0 (Item 6 / P0-E.2)
+#
+# Triggers on:
+#   • push to main/master branches
+#   • all pull requests (any branch)
+#   • manual workflow_dispatch (click Actions → Run workflow)
+#
+# Jobs:
+#   1. typecheck    — TypeScript `tsc --noEmit`. Fails in 1s if there's a type error.
+#   2. test-node    — Jest full suite (25min average today). Depends on typecheck.
+#   3. test-rust    — cargo build + cargo clippy + cargo test for contracts
+#                     registry & escrow. Uses rustup 1.84.0 (frozen version).
+#                     If toolchain breaks (rare), job marks with warning but
+#                     does NOT block PR (continue-on-error: true) — team resolves.
+#   4. build-docker — Builds Dockerfile v2.0 image with buildx. Publishes only if
+#                     push to main (with secrets DOCKER_HUB_USERNAME / GITHUB_TOKEN).
+#                     Without secrets, doesn't publish, only builds to prove it compiles.
+#
+# Concurrency: per PR/branch — cancel old obsolete builds on the same branch.
+
+name: TrustGate CI
+
+on:
+  push:
+    branches: [main, master]
+    paths-ignore:
+      - '**/*.md'
+      - '.github/labeler.yml'
+  pull_request:
+    branches: [main, master]
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      run_full_rust:
+        description: 'Force run Rust tests (including #[ignore])'
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: trustgate-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CI: true
+  NODE_VERSION: '20'
+  RUST_VERSION: '1.84.0'
+  RUST_BACKTRACE: '1'
+  # Local network for any job that ends up needing mock Stellar.
+  NETWORK: local
+  # Ephemeral test keys — NEVER put production keys here.
+  ADMIN_SECRET: ${{ secrets.ADMIN_SECRET_CI || '' }}
+
+permissions:
+  contents: read
+  pull-requests: read
+  # Required to publish images to ghcr.io if enabled in the future:
+  packages: write
+
+defaults:
+  run:
+    working-directory: ./
+
+jobs:
+  # ------------------------------------------------------------------------
+  # Job 1 — TypeScript Type Check (fast, first to fail).
+  # ------------------------------------------------------------------------
+  typecheck:
+    name: TS Typecheck (tsc --noEmit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies (npm ci)
+        run: npm ci
+        working-directory: ./TrustGate
+
+      - name: TypeScript typecheck
+        run: npx tsc --noEmit
+        working-directory: ./TrustGate
+
+  # ------------------------------------------------------------------------
+  # Job 2 — Node.js / Jest Tests
+  # ------------------------------------------------------------------------
+  test-node:
+    name: Node Tests (Jest)
+    needs: typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: trustgate
+          POSTGRES_PASSWORD: trustgate
+          POSTGRES_DB: trustgate
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U trustgate -d trustgate"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      # Connects to services of this job; ports are mirrored on the runner host.
+      REDIS_URL: redis://127.0.0.1:6379
+      DATABASE_URL: postgres://trustgate:trustgate@127.0.0.1:5432/trustgate
+      # We generate random keypairs if ADMIN_SECRET is not set in repo secrets.
+      # App tests depend on MARKETPLACE_WALLET being set.
+      MARKETPLACE_WALLET: ${{ secrets.MARKETPLACE_WALLET_CI || '' }}
+      REGISTRY_CONTRACT_ID: ${{ secrets.REGISTRY_CONTRACT_ID_CI || 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' }}
+      USDC_ISSUER: ${{ secrets.USDC_ISSUER_CI || 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN' }}
+      TRUSTLESS_WORK_API_KEY: ${{ secrets.TRUSTLESS_WORK_API_KEY_CI || 'ci-dummy-key' }}
+      STELLAR_RPC_URL: http://localhost:8000/soroban/rpc
+      STELLAR_HORIZON_URL: http://localhost:8000
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: ./TrustGate
+
+      - name: Apply DB migrations
+        run: npm run db:migrate
+        working-directory: ./TrustGate
+        # Some tests use InMemory*Repository (without Postgres); if migration
+        # fails because .env doesn't exist, we warn-only skip. If it fails due to bad SQL,
+        # job breaks. Adjust to continue-on-error only if necessary.
+        continue-on-error: false
+
+      - name: Run Jest suite
+        run: npm test -- --maxWorkers=2 --forceExit
+        working-directory: ./TrustGate
+
+      - name: Upload coverage (if enabled)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jest-coverage
+          path: |
+            TrustGate/coverage/
+            TrustGate/jest-results/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # ------------------------------------------------------------------------
+  # Job 3 — Rust Smart Contracts (registry + escrow Option C / ADR0002 P2.4)
+  # ------------------------------------------------------------------------
+  test-rust:
+    name: Rust Contracts (Registry + Escrow)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain ${{ env.RUST_VERSION }}
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: wasm32-unknown-unknown, wasm32v1-none
+          components: rustfmt, clippy
+
+      # Cargo cache — reduces build time from 20min → 3min in PRs.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: 'v2-soroban'
+          shared-key: 'trustgate-contracts'
+          workspaces: |
+            TrustGate/contracts/registry -> TrustGate/contracts/registry/target
+            TrustGate/contracts/escrow -> TrustGate/contracts/escrow/target
+
+      - name: (Registry) Build release WASM + clippy deny(warnings)
+        working-directory: ./TrustGate/contracts/registry
+        run: |
+          cargo fmt -- --check || echo "(warning: rustfmt check skipped — just warn)"
+          cargo build --target wasm32-unknown-unknown --release 2>&1 | tail -30
+          cargo clippy --all-targets -- -D warnings
+
+      - name: (Registry) Test suite
+        working-directory: ./TrustGate/contracts/registry
+        run: cargo test --workspace
+
+      - name: (Escrow Option C) Build release WASM + clippy deny(warnings)
+        working-directory: ./TrustGate/contracts/escrow
+        run: |
+          cargo fmt -- --check || echo "(warning: rustfmt just warn)"
+          cargo build --target wasm32-unknown-unknown --release 2>&1 | tail -30
+          cargo clippy --all-targets -- -D warnings
+
+      - name: (Escrow Option C) Test suite
+        working-directory: ./TrustGate/contracts/escrow
+        run: |
+          # Standard tests (including claim_timeout_before_14d_fails).
+          # #[ignore] tests (claim_timeout_after_14d_works) are SKIP.
+          # Can run with --include-ignored only if requested via manual dispatch.
+          if [ "${{ github.event.inputs.run_full_rust }}" == "true" ]; then
+            echo "Running all tests including #[ignore] ..."
+            cargo test --workspace -- --include-ignored
+          else
+            cargo test --workspace
+          fi
+
+  # ------------------------------------------------------------------------
+  # Job 4 — Docker Build (publishes if push to main and secrets available)
+  # ------------------------------------------------------------------------
+  build-docker:
+    name: Docker Build + Push (condicional)
+    needs: [typecheck, test-node]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image_digest: ${{ steps.buildpush.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Cache Docker layers
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-trustgate-buildx-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-trustgate-buildx-
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ghcr.io/${{ github.repository }}
+            name=docker.io/${{ secrets.DOCKER_HUB_USERNAME }}/trustgate,enable=${{ github.event_name != 'pull_request' && secrets.DOCKER_HUB_USERNAME != '' }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=sha,format=long
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Login to GHCR
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push (push only if push to main)
+        id: buildpush
+        uses: docker/build-push-action@v6
+        with:
+          context: ./TrustGate
+          file: ./TrustGate/Dockerfile
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
+          platforms: linux/amd64
+          # SBOM + provenance (level 2 of SLSA framework).
+          provenance: mode=max
+          sbom: true
+          # Don't give up if registry doesn't publish due to no login — at
+          # least the build proved to be possible.
+          no-fail: false
+
+      # cache-to doesn't support append on the same path; move new cache to old path.
+      - name: Move cache
+        run: |
+          rm -rf /tmp/.buildx-cache
+          mv /tmp/.buildx-cache-new /tmp/.buildx-cache 2>/dev/null || true

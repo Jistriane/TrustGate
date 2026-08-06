@@ -1,0 +1,21 @@
+{
+  "detectors": [],
+  "exclude_paths": [
+    "target/",
+    "node_modules/",
+    "test_snapshots/",
+    ".git/"
+  ],
+  "exclude_informational": false,
+  "exclude_low": false,
+  "exclude_medium": false,
+  "exclude_high": false,
+  "fail_on": "none",
+  "sarif": false,
+  "checklist": "public-private-leading-vars",
+  "force_solc_latest": false,
+  "solc_remaps": null,
+  "comments": {
+    "_note": "This file EXISTS only to allow slither to run in Rust/Soroban folders. Slither is originally Solidity/EVM; we use it here for PIPELINE COVERAGE (file marks that the team considered static analysis) while Soroban-specific tools (soroban-udeps + cargo-audit + cargo-udeps + clippy -D warnings) are the TRUE L2.1/L2.2 gates. DO NOT use slither findings as source of truth for Soroban/Rust."
+  }
+}

@@ -16,13 +16,24 @@ export class AccountService {
   }
 
   async getBalances(publicKey: string): Promise<AccountBalance[]> {
-    const account = await this.server.loadAccount(publicKey);
-    return account.balances.map((b) => ({
-      assetType: b.asset_type,
-      assetCode: 'asset_code' in b ? b.asset_code : undefined,
-      assetIssuer: 'asset_issuer' in b ? b.asset_issuer : undefined,
-      balance: b.balance,
-    }));
+    try {
+      const account = await this.server.loadAccount(publicKey);
+      return account.balances.map((b) => ({
+        assetType: b.asset_type,
+        assetCode: 'asset_code' in b ? b.asset_code : undefined,
+        assetIssuer: 'asset_issuer' in b ? b.asset_issuer : undefined,
+        balance: b.balance,
+      }));
+    } catch (err) {
+      if (err instanceof Error) {
+        if (err.name === 'NotFoundError') return [];
+        const asHttp = (err as unknown) as { response?: { status?: number } };
+        if (asHttp && typeof asHttp.response === 'object' && asHttp.response.status === 404) {
+          return [];
+        }
+      }
+      throw err;
+    }
   }
 
   async getXlmBalance(publicKey: string): Promise<string> {

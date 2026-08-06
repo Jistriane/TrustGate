@@ -7,6 +7,7 @@ import { logger } from '../config/logger';
 export class TaskNotFoundError extends Error {}
 export class TaskNotOpenError extends Error {}
 export class NoBidsError extends Error {}
+export class AuctionPausedError extends Error {}
 
 export interface SelectWinnerResult {
   task: Task;
@@ -14,12 +15,27 @@ export interface SelectWinnerResult {
 }
 
 export class AuctionService {
+  private readonly pauseAuction: boolean;
+
   constructor(
     private readonly taskRepository: TaskRepositoryLike,
     private readonly bidRepository: BidRepositoryLike,
-  ) {}
+    envOverrides?: Partial<{ PAUSE_AUCTION: 'true' | 'false' }>,
+  ) {
+    const env = envOverrides ?? process.env;
+    this.pauseAuction = env.PAUSE_AUCTION === 'true';
+  }
+
+  private assertNotPaused() {
+    if (this.pauseAuction) {
+      throw new AuctionPausedError(
+        '[AuctionService.selectWinner] PAUSE_AUCTION=1 (off-chain feature flag). Winner selection is blocked until unpause.',
+      );
+    }
+  }
 
   async selectWinner(taskId: string): Promise<SelectWinnerResult> {
+    this.assertNotPaused();
     const task = await this.taskRepository.findById(taskId);
     if (!task) {
       throw new TaskNotFoundError(`Task not found: ${taskId}`);

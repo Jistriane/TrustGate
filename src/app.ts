@@ -36,6 +36,7 @@ import { ExecutorResultController } from './controllers/executorResultController
 import { AuthController } from './controllers/authController';
 import { errorHandler } from './middlewares/errorHandler';
 import { adminAuth } from './middlewares/adminAuth';
+import { createLazyRateLimitHandle, parseRateLimitConfig, type RateLimitBundle } from './middlewares/rateLimit';
 import { createResultPaymentGate } from './config/x402';
 import { getDbPool } from './db/pool';
 import { formatUsdcStroopsToDecimal, parseUsdcDecimalToStroops } from './utils/money';
@@ -199,6 +200,21 @@ export function createApp(overrides: AppOverrides = {}): Express {
     }),
   );
 
+  const rateLimitHandle = createLazyRateLimitHandle(parseRateLimitConfig());
+  void rateLimitHandle.bundle.then((bundle: RateLimitBundle) => {
+    logger.info(
+      {
+        storage: bundle.activeStorage(),
+        taskCompleteRpm: bundle.taskCompleteRpm,
+        bidCreateRpm: bundle.bidCreateRpm,
+        webhookRpm: bundle.webhookRpm,
+      },
+      'rate-limiters initialised (lazy)',
+    );
+  });
+  app.set('rateLimitBundleShutdown', rateLimitHandle.shutdown);
+  app.use('/webhooks', rateLimitHandle.webhooks);
+
   // Swagger UI's page needs inline scripts/styles to bootstrap; helmet's
   // default CSP (script-src 'self', etc.) blocks that. Strip the CSP header
   // for just this path rather than weakening it for the whole app.
@@ -211,6 +227,20 @@ export function createApp(overrides: AppOverrides = {}): Express {
     swaggerUi.serve,
     swaggerUi.setup(swaggerSpec),
   );
+
+  /**
+   * @openapi
+   * /:
+   *   get:
+   *     summary: Root redirect → Swagger UI (API documentation)
+   *     tags: [Meta]
+   *     responses:
+   *       302:
+   *         description: Redirects to /api-docs (the interactive API frontend / Swagger UI).
+   */
+  app.get('/', (_req, res) => {
+    res.redirect(302, '/api-docs');
+  });
 
   /**
    * @openapi
@@ -529,6 +559,7 @@ export function createApp(overrides: AppOverrides = {}): Express {
    */
   app.post(
     '/tasks/:id/complete',
+    rateLimitHandle.taskComplete,
     signatureAuth({ matchBodyField: 'requester' }),
     idempotencyMw({ scope: 'complete_task', publicKeyFrom: { bodyField: 'requester' } }),
     taskController.complete,
@@ -579,6 +610,7 @@ export function createApp(overrides: AppOverrides = {}): Express {
    */
   app.post(
     '/bids',
+    rateLimitHandle.bidCreate,
     signatureAuth({ matchBodyField: 'executor' }),
     idempotencyMw({ scope: 'place_bid', publicKeyFrom: { bodyField: 'executor' } }),
     bidController.create,

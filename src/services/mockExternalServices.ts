@@ -13,7 +13,28 @@ export class MockRegistryService implements RegistryServiceLike {
   private executors = new Map<string, ExecutorInfo>();
 
   async registerExecutor(executor: Keypair, metadataUri: string): Promise<void> {
-    this.executors.set(executor.publicKey(), { metadata_uri: metadataUri });
+    const now = Date.now();
+    this.executors.set(executor.publicKey(), {
+      metadata_uri: metadataUri,
+      profile_uri: metadataUri,
+      registered_at_ledger: now,
+      updated_at_ledger: now,
+    });
+  }
+
+  async updateExecutor(executor: Keypair, profileUri: string): Promise<void> {
+    const existing = this.executors.get(executor.publicKey());
+    if (!existing) throw new Error('[MockRegistryService.updateExecutor] not registered');
+    this.executors.set(executor.publicKey(), {
+      ...existing,
+      profile_uri: profileUri,
+      updated_at_ledger: Date.now(),
+    });
+  }
+
+  async unregisterExecutor(executor: Keypair): Promise<void> {
+    const existed = this.executors.delete(executor.publicKey());
+    if (!existed) throw new Error('[MockRegistryService.unregisterExecutor] not registered');
   }
 
   async isRegistered(executorPublicKey: string): Promise<boolean> {
@@ -21,7 +42,7 @@ export class MockRegistryService implements RegistryServiceLike {
   }
 
   async getExecutor(executorPublicKey: string): Promise<ExecutorInfo> {
-    return this.executors.get(executorPublicKey) ?? { metadata_uri: '' };
+    return this.executors.get(executorPublicKey) ?? { metadata_uri: '', profile_uri: '', registered_at_ledger: 0, updated_at_ledger: 0 };
   }
 }
 

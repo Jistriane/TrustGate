@@ -6,6 +6,7 @@ export interface BidRepositoryLike {
   findById(id: string): Promise<Bid | undefined>;
   findByTaskId(taskId: string): Promise<Bid[]>;
   list(): Promise<Bid[]>;
+  listSelectedCreatedBefore(createdAtMax: string | Date): Promise<Bid[]>;
 }
 
 export class InMemoryBidRepository implements BidRepositoryLike {
@@ -26,6 +27,15 @@ export class InMemoryBidRepository implements BidRepositoryLike {
   async list(): Promise<Bid[]> {
     return Array.from(this.bids.values());
   }
+
+  async listSelectedCreatedBefore(createdAtMax: string | Date): Promise<Bid[]> {
+    const cutoff = createdAtMax instanceof Date ? createdAtMax.getTime() : new Date(createdAtMax).getTime();
+    return Array.from(this.bids.values()).filter((bid) => {
+      if (bid.status !== 'SELECTED') return false;
+      const c = new Date(bid.createdAt).getTime();
+      return c <= cutoff;
+    });
+  }
 }
 
 interface BidRow {
@@ -41,6 +51,14 @@ interface BidRow {
 
 export class PgBidRepository implements BidRepositoryLike {
   constructor(private readonly pool: Pool) {}
+
+  /**
+   * RECOMMENDED SQL indexes (avoid seq scan in production with >10k bids):
+   *   create index concurrently if not exists idx_bids_status_created_at
+   *     on bids (status, created_at);
+   *   create index concurrently if not exists idx_bids_task_id_created_at
+   *     on bids (task_id, created_at asc);
+   */
 
   async save(bid: Bid): Promise<void> {
     await this.pool.query(
@@ -123,6 +141,30 @@ export class PgBidRepository implements BidRepositoryLike {
         from bids
         order by created_at desc
       `,
+    );
+    return res.rows.map((row) => ({
+      id: row.id,
+      taskId: row.task_id,
+      executorPublicKey: row.executor_public_key,
+      amountStroops: BigInt(row.amount_stroops),
+      collateralStroops: BigInt(row.collateral_stroops),
+      escrowId: row.escrow_id,
+      status: row.status,
+      createdAt: row.created_at.toISOString(),
+    }));
+  }
+
+  async listSelectedCreatedBefore(createdAtMax: string | Date): Promise<Bid[]> {
+    const cutoff = createdAtMax instanceof Date ? createdAtMax : new Date(createdAtMax);
+    const res = await this.pool.query<BidRow>(
+      `
+        select id, task_id, executor_public_key, amount_stroops, collateral_stroops, escrow_id, status, created_at
+        from bids
+        where status = 'SELECTED'
+          and created_at <= $1
+        order by created_at asc
+      `,
+      [cutoff],
     );
     return res.rows.map((row) => ({
       id: row.id,

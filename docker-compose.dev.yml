@@ -1,0 +1,73 @@
+# docker-compose.dev.yml — TrustGate (Item 5 / P0-E.1)
+#
+# DEV / HOT-RELOAD stack.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+#   # or via package.json script: npm run docker:dev
+#
+# What this override DOES (compared to production docker-compose.yml):
+#   ✅ App is built from THE SAME Dockerfile, but:
+#        • overrides command → `npm run start:dev` (ts-node-dev --respawn).
+#        • bind mount `./src` → `/app/src` in container (hot-reload).
+#        • bind mount `./scripts` → `/app/scripts` (if you change scripts, no need to rebuild).
+#        • bind mount `./tsconfig*.json` → `/app/tsconfig*.json`.
+#        • bind mount local `.env` → `/app/.env` (if it exists) → dotenv() picks it up.
+#        • NODE_ENV=development (pino-pretty is activated).
+#        • PORT 3000 remains published; ADDS port 9229 for Node Inspector remote debug (--inspect=0.0.0.0:9229).
+#        • mem_limit and cpus are LARGER than production (dev build is heavier: TS compiling).
+#        • security_opt:no-new-privileges remains.
+#        • stellar-quickstart / redis / postgres are inherited UNCHANGED from base.
+#
+# Accepted trade-off: we use ts-node-dev inside the DEV container, which already has
+# devDependencies? NO — production Dockerfile omits dev. So in DEV
+# override, we mount ./node_modules from the host via bind-mount (they already exist
+# locally via `npm install`). If you're running the 1st time and node_modules don't
+# exist, the user gets a clear log message to run `npm install` locally.
+
+services:
+  app:
+    command:
+      - ./scripts/wait-for-it.sh
+      - redis:6379
+      - -t
+      - '60'
+      - --
+      - ./scripts/wait-for-it.sh
+      - postgres:5432
+      - -t
+      - '60'
+      - --
+      - ./node_modules/.bin/ts-node-dev
+      - --respawn
+      - --transpile-only
+      - --poll
+      - --inspect=0.0.0.0:9229
+      - src/server.ts
+    environment:
+      - NODE_ENV=development
+      - LOG_LEVEL=debug
+      - TS_NODE_TRANSPILE_ONLY=true
+      - RATE_LIMIT_STORAGE=redis
+    ports:
+      - '9229:9229'
+    volumes:
+      # Hot reload for TypeScript source code and build configurations.
+      - ./src:/app/src:cached
+      - ./scripts:/app/scripts:cached
+      - ./tsconfig.json:/app/tsconfig.json:ro
+      - ./package.json:/app/package.json:ro
+      - ./package-lock.json:/app/package-lock.json:ro
+      # Local .env (if it exists) is mounted read-only.
+      - ./.env:/app/.env:ro
+      # node_modules MOUNTED FROM HOST (important: production image doesn't have
+      # ts-node, jest, typescript). User MUST have run `npm install`
+      # locally. If not mounted, ts-node-dev breaks.
+      - ./node_modules:/app/node_modules:cached
+    # We turn off strict healthcheck in dev — hot reload causes latency spikes
+    # on the first request after ts-node-dev restarts.
+    healthcheck:
+      disable: true
+    mem_limit: 2g
+    cpus: '2.0'
+    stop_grace_period: 10s

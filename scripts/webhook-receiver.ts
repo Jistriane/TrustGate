@@ -5,6 +5,10 @@ const app = express();
 
 app.use(express.json({ limit: '1mb' }));
 
+app.get('/', (_req, res) => {
+  res.redirect(302, '/health');
+});
+
 app.post('/webhooks/result-published', (req, res) => {
   const event = {
     receivedAt: new Date().toISOString(),
