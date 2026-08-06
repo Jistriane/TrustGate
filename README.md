@@ -1,25 +1,27 @@
 # TrustGate
 
-**A trustless task marketplace on Stellar.** Requesters post tasks and escrow payment,
-executors bid with collateral, the marketplace picks a winner, and Soroban + escrow
-settle the deal automatically — no middleman holding funds.
+**A trustless task marketplace on Stellar.** A requester posts a task and
+escrows payment. Executors bid with their own collateral on the line. The
+marketplace picks a winner, and Soroban + escrow settle the deal automatically
+— no middleman ever holds the funds.
 
 Highlights:
 
-- **On-chain executor registry** (Soroban `Registry` contract) — only allow-listed
-  executors can win bids.
-- **Bid-collateral escrow** via Trustless Work — executors post stake to deter fraud.
-- **Pay-per-result access** (x402 + MPP) — requesters pay USDC only when fetching
-  the actual deliverable.
-- **Event-driven core** (Outbox pattern + Redis Streams + Worker) — all external
-  side-effects run asynchronously with idempotent handlers.
-- **Signed requests** (testnet/pubnet) — no secret keys over the wire; every
-  state-mutating call is authenticated via `x-tg-*` headers and a server-issued
-  one-time nonce.
-- **Observability built-in** — Prometheus metrics (auth + worker + backlog),
-  Grafana dashboards, alerting rules, P0/P1 runbooks, and a one-command
-  [baseline verifier](#observability-baseline-verification) that regressions
-  can't sneak past.
+- **On-chain executor registry** — only allow-listed executors (via a Soroban
+  `Registry` contract) can win bids.
+- **Bid collateral** — executors stake funds via Trustless Work to deter fraud.
+- **Pay-per-result** — requesters pay in USDC (x402 + MPP) only when they
+  fetch the actual deliverable.
+- **Async by design** — an Outbox + Redis Streams + Worker pipeline runs every
+  external side-effect asynchronously, with idempotent handlers so nothing
+  double-fires.
+- **Signed, keyless requests** — no secret keys ever travel over the wire;
+  every state-changing call is authenticated with a wallet signature and a
+  one-time server nonce.
+- **Observability built in** — Prometheus metrics, Grafana dashboards, alert
+  rules, runbooks, and a one-command
+  [baseline verifier](#observability-baseline-verification) that catches
+  regressions before they ship.
 
 ```text
 requester ──list task, pay fee──▶  marketplace  ◀──register, bid + collateral── executor
@@ -31,22 +33,23 @@ requester ──list task, pay fee──▶  marketplace  ◀──register, bid
 
 ## Demo
 
-One real run of the full lifecycle — executor registration, task creation, bid with
-collateral, automatic assignment, result publication and escrow settlement — recorded
-against the live API (27s, no narration):
+One real run of the full lifecycle — executor registration, task creation, bid
+with collateral, automatic assignment, result publication, and escrow
+settlement — recorded against the live API (27s, no narration):
 
 <video src="docs/media/trustgate-demo.mp4" poster="docs/media/trustgate-demo-poster.png" controls muted width="100%"></video>
 
 [![TrustGate demo](docs/media/trustgate-demo-poster.png)](docs/media/trustgate-demo.mp4)
 
 Every number on screen comes from that run: 6/6 stages, 38.3s from executor
-registration to settled escrow, $10 reserve, $9 winning bid, $10 collateral. The
-stage burst is slowed to 0.35x and the 36s settlement wait is compressed 10x —
-both labelled on screen. The throwaway secret keys the run prints are blurred in
-the recording.
+registration to settled escrow, $10 reserve, $9 winning bid, $10 collateral.
+The stage burst is slowed to 0.35x and the 36s settlement wait is compressed
+10x — both labelled on screen. The throwaway secret keys the run prints are
+blurred in the recording.
 
-The video is built with Remotion in [`demo-video/`](demo-video/README.md), which also
-holds the capture script if you want to re-record it against your own instance.
+The video is built with Remotion in [`demo-video/`](demo-video/README.md), which
+also holds the capture script if you want to re-record it against your own
+instance.
 
 ## Table of contents
 
@@ -86,159 +89,119 @@ holds the capture script if you want to re-record it against your own instance.
 
 ## Architecture
 
-TrustGate is split across three trust boundaries: (1) the **dApp / wallet**
-running in the user's browser, (2) the **off-chain API + Worker** we operate,
-and (3) **on-chain / external services** (Soroban RPC, Trustless Work, OZ
-Channels). Data that requires consensus lives on-chain or in Trustless Work;
-everything else lives in Postgres and is mirrored to Redis Streams for
-asynchronous processing.
+TrustGate is split across three trust boundaries: the **dApp / wallet** in the
+user's browser, the **off-chain API + Worker** we operate, and **on-chain /
+external services** (Soroban RPC, Trustless Work, OZ Channels). Anything that
+needs consensus lives on-chain or in Trustless Work; everything else lives in
+Postgres and is mirrored to Redis Streams for async processing.
+
+> Looking for every component and data path? See the
+> [full architecture deep dive](docs/architecture.md).
 
 ### System diagram
 
-[[diagram: Complete TrustGate architecture. Components: (1) Users: Requester Browser + Freighter wallet, Executor Browser + Freighter. (2) Off-chain API: Express routes /auth /executors /tasks /bids /metrics. Layers: SignatureAuth middleware, Controllers, Services (TaskService, BidService, EscrowService, MppChargeService, X402PaymentService, AuthController), Repositories (TaskRepository, BidRepository, OutboxRepository). (3) Persistence: Postgres (tables tasks, bids, outbox_events, event_consumptions, executors), Redis Streams (tg:events, consumer group tg-workers, XLEN/XPENDING). (4) Worker: tick loop every WORKER_POLL_MS, per-event handlers (task_completion_requested → releaseMilestone Trustless Work, post-result webhook, outbox publisher). (5) Observability: /metrics → Prometheus scrape → Grafana dashboards → alert rules, /health endpoints. (6) On-chain and external: Stellar Soroban RPC + Horizon (Registry contract, USDC SAC), Trustless Work API (bid collateral + release), OZ Channels x402 facilitator, optional external webhook. Arrows: Requester/Executor -> signed fetch (x-tg-* headers + idempotency-key) -> API. API -> Postgres (atomic outbox_events transaction). API -> Redis Streams (publisher marks processed_at). Worker -> XREADGROUP/XAUTOCLAIM -> handlers -> Trustless Work / Webhook / Postgres event_consumptions (idempotency). Prometheus -> scrape app:3000/metrics, Grafana -> Prometheus datasource + provisioned dashboards.]]
-
 ```mermaid
 flowchart LR
-  subgraph Users["👥 Users & Wallets"]
-    Req["Requester\n(Freighter)"]
-    Exe["Executor\n(Freighter)"]
+  subgraph Users["Users & wallets"]
+    Req["Requester (Freighter)"]
+    Exe["Executor (Freighter)"]
   end
 
-  subgraph API["🌐 Off-chain API (Express)"]
-    R["/auth, /tasks, /bids, /executors"]
-    MW["SignatureAuth\n(x-tg-* headers)"]
-    SVC["Services\nTask / Bid / Escrow / MPP / x402"]
-    REPO["Repositories\nPostgres + Outbox"]
-    R --> MW --> SVC --> REPO
+  subgraph API["TrustGate API"]
+    Auth["Signed-request auth"]
+    Svc["Task / Bid / Escrow services"]
+    Repo["Postgres + Outbox"]
   end
 
-  subgraph DATA["💾 Persistence"]
-    PG[(Postgres\ntasks, bids,\noutbox_events,\nevent_consumptions)]
-    RS[(Redis Streams\ntg:events\ngroup: tg-workers)]
+  subgraph Async["Worker (async)"]
+    Worker["Outbox consumer"]
   end
 
-  subgraph WORKER["⚙️  Worker (async handlers)"]
-    W["tick loop\n(WORKER_POLL_MS)"]
-    H["handlers:\ntask_completion_requested,\nresult_published_webhook,\noutbox publisher"]
-    W --> H
+  subgraph Chain["On-chain & external"]
+    Stellar["Stellar RPC / Horizon"]
+    TW["Trustless Work escrow"]
+    OZ["OZ Channels (x402)"]
   end
 
-  subgraph EXTERNAL["🔗 On-chain & External"]
-    SRP["Stellar\nRPC/Horizon"]
-    TW["Trustless Work\n(bid escrow)"]
-    OZ["OZ Channels\n(x402 facilitator)"]
-    WH["Webhook\n(optional)"]
+  subgraph Obs["Observability"]
+    Prom["Prometheus"]
+    Graf["Grafana"]
   end
 
-  subgraph OBS["📊 Observability"]
-    MET["/metrics\n(prom-client)"]
-    PROM[Prometheus]
-    GRAF[Grafana\n2 dashboards]
-    ALERTS["Alert Rules\n(trustgate-auth, trustgate-worker)"]
-    PROM --> GRAF --> ALERTS
-  end
-
-  Req -->|signed fetch\nx-tg-* + Idempotency-Key| API
-  Exe -->|signed fetch\nx-tg-* + Idempotency-Key| API
-  REPO -->|"1. (tx) INSERT outbox_events"| PG
-  REPO -->|"2. XADD tg:events + mark processed_at"| RS
-  W -->|"XREADGROUP + XAUTOCLAIM"| RS
-  H -->|"INSERT event_consumptions (idempotency)"| PG
-  H -->|"releaseMilestone"| TW
-  H -->|"POST /webhooks"| WH
-  SVC -->|"Registry.classic USDC"| SRP
-  SVC -->|"create escrow"| TW
-  SVC -->|"x402 charge"| OZ
-  MET -->|"scrape :3000/metrics"| PROM
-  API --> MET
+  Req -->|signed request| API
+  Exe -->|signed request| API
+  API -->|writes| Repo
+  Repo -->|events| Worker
+  Worker -->|release escrow| TW
+  API -->|register / bid| Stellar
+  API -->|create escrow| TW
+  API -->|pay-per-result| OZ
+  API -->|/metrics| Prom
+  Prom --> Graf
 ```
 
 ### Full lifecycle sequence
 
+This maps directly to the [curl walkthrough](#example-full-lifecycle-via-curl)
+below — each numbered step here is the same numbered `curl` call there.
+
 ```mermaid
 sequenceDiagram
-  actor Req as Requester (Freighter)
-  actor Exe as Executor (Freighter)
+  actor Req as Requester
+  actor Exe as Executor
+  actor Adm as Admin
   participant API as TrustGate API
   participant PG as Postgres
   participant TW as Trustless Work
   participant RS as Redis Streams
   participant W as Worker
   participant OZ as OZ Channels
-  Req->>API: 1. POST /auth/nonce { publicKey }
-  API-->>Req: { timestamp, nonce }  (stored in Redis, TTL 600s, one-time)
-  Req->>API: 2. POST /tasks [x-tg-* signed, Idempotency-Key]
-  Note over API,PG: begin txn + outbox_events atomically + MPP listing fee
-  API->>PG: INSERT task (PUBLISHED)
-  API->>PG: INSERT outbox_events (mpp_charge_confirmed)
-  API-->>Req: 201 { taskId }
-  Exe->>API: 3. POST /executors/register [x-tg-* signed]
-  API->>API: invoke Soroban Registry.add_executor
-  API-->>Exe: 200
-  Exe->>API: 4. POST /bids [x-tg-* signed, Idempotency-Key]
-  API->>TW: create bid-collateral escrow (lock collateral)
-  API->>PG: INSERT bid + outbox_events
-  API-->>Exe: 201
-  actor Adm as Admin
-  Adm->>API: 5. POST /tasks/:id/select [x-admin-secret]
-  API->>PG: UPDATE task = ASSIGNED, winningBidId
-  API-->>Adm: 200
-  Exe->>API: 6. POST /executor/tasks/:id/result [x-tg-* signed]
-  API->>PG: UPDATE task = RESULT_PUBLISHED
-  API->>RS: XADD result_published (optional webhook)
-  API-->>Exe: 200
-  Req->>OZ: 7. x402 pay GET /executor/tasks/:id/result (USDC)
-  OZ-->>API: forward with charge proof
-  API-->>Req: deliverable bytes
-  Req->>API: 8. POST /tasks/:id/complete [x-tg-* signed, Idempotency-Key]
-  API->>PG: UPDATE task = COMPLETING
-  API->>RS: XADD task_completion_requested (Outbox)
+
+  Req->>API: 1. Get a signed-request nonce
+  API-->>Req: nonce (one-time, 600s TTL)
+  Req->>API: 2. Create task (pays listing fee)
+  API->>PG: save task + outbox event
+  API-->>Req: 201 taskId
+  Exe->>API: 3. Register as executor
+  API->>API: add to on-chain Registry
+  Exe->>API: 4. Place bid
+  API->>TW: lock bid collateral
+  API->>PG: save bid + outbox event
+  Adm->>API: 5. Select winning bid
+  API->>PG: mark task ASSIGNED
+  Exe->>API: 6. Publish result
+  API->>PG: mark task RESULT_PUBLISHED
+  Req->>OZ: 7. Pay for result (x402, USDC)
+  OZ-->>API: payment proof
+  API-->>Req: deliverable
+  Req->>API: 8. Mark task complete
+  API->>RS: queue completion event
   API-->>Req: 202 Accepted (async)
-  W->>RS: XREADGROUP → task_completion_requested
-  W->>PG: INSERT event_consumptions (skip if exists = idempotency)
-  W->>TW: releaseMilestone (escrow → executor USDC)
-  W->>PG: UPDATE task = COMPLETED
-  W->>RS: XADD task_completed
+  W->>RS: pick up completion event
+  W->>TW: release escrow to executor
+  W->>PG: mark task COMPLETED
 ```
 
-**Key guarantees in this flow:**
+**Key guarantees:**
 
-- Every write that crosses trust boundaries (escrow release, webhooks, listing
-  fee) is **enqueued through the Outbox** before the HTTP transaction commits.
+- Anything that crosses a trust boundary (escrow release, webhooks, listing
+  fee) is **queued through the Outbox** before the HTTP transaction commits —
+  it can't be lost even if the process crashes right after responding.
 - The Worker delivers **at-least-once**; the `event_consumptions` table turns
-  it into effectively **exactly-once per handler** by short-circuiting on
-  duplicate `(handler_name, event_id)`.
+  that into effectively **exactly-once per handler**, by skipping any
+  `(handler_name, event_id)` pair it's already processed.
 - `POST /tasks/:id/complete` returns `202 Accepted` immediately instead of
-  blocking on external escrow/network calls.
+  making the requester wait on escrow/network calls.
 
 ### Worker & Outbox pattern
 
-See the full architectural justification in
-[ADR 0001](docs/adr/0001-outbox-worker-idempotency.md).
-
-**High level**:
-
-1. The API writes an `outbox_events` row inside the same Postgres transaction
-   as the state mutation it accompanies.
-2. A publisher (either eager within the request or a dedicated cron) calls
-   `XADD` on Redis Stream `tg:events` and sets `processed_at`.
-3. The Worker runs a `setInterval` tick (default 2 s, non-overlapping via a
-   `running` guard) that combines:
-   - `XREADGROUP GROUP tg-workers <name> COUNT 32 STREAMS tg:events >` for new work.
-   - `XAUTOCLAIM` every N ticks to recover entries from crashed consumers
-     (stuck entries in `XPENDING` with idle time > threshold).
-   - A backlog sampling path every 5 s that refreshes
-     `tg_stream_length`, `tg_stream_pending`,
-     `tg_stream_pending_consumer`, `tg_outbox_unprocessed`,
-     `tg_outbox_failed` (see [Observability](#observability)).
-4. Each handler wraps its work in: `SELECT 1 FROM event_consumptions WHERE
-   handler = $1 AND event_id = $2` → if row exists, NOOP → else perform
-   side-effects + `INSERT` consumption row.
-
-Per-consumer pending cardinality is intentionally bounded by the consumer
-group size (typically 1–16 workers), so the per-consumer label dimension in
-`tg_stream_pending_consumer{stream,group,consumer}` is always low-cardinality
-and safe to ship to Prometheus.
+In short: the API writes to Postgres and to an outbox table in the same
+transaction, a publisher relays outbox rows onto a Redis Stream, and the
+Worker consumes that stream with automatic recovery (`XAUTOCLAIM`) and
+per-handler idempotency. The full step-by-step — including tick intervals,
+backlog sampling, and the metrics it emits — lives in
+[docs/architecture.md](docs/architecture.md#worker--outbox-pattern-full-detail)
+and [ADR 0001](docs/adr/0001-outbox-worker-idempotency.md).
 
 ### Signed request flow (on testnet/pubnet)
 
@@ -248,32 +211,31 @@ sequenceDiagram
   participant CL as dApp Client
   participant A as TrustGate API
   participant R as Redis
-  CL->>A: POST /auth/nonce { publicKey: G… }
-  A->>R: SET nonce:<uuid> timestamp EX 600 + nonces:<pk> SET (rate tracking)
-  A-->>CL: { version, timestamp, nonce, ttlSeconds: 600 }
-  CL->>CL: build canonical = "METHOD\nPATH\nTIMESTAMP\nNONCE\nSHA256(body)"
-  CL->>W: signMessage(canonical, { networkPassphrase: TESTNET })
-  W-->>CL: base64 signature
-  CL->>A: POST /protected-route\n x-tg-public-key, x-tg-timestamp, x-tg-nonce, x-tg-signature\n Idempotency-Key (POST/PUT/PATCH/DELETE)
-  A->>R: GETDEL nonce:<uuid>  (one-time)
-  alt nonce missing
-    A-->>CL: 401 invalid nonce (replay attempt)
-  else signature invalid / timestamp skew
-    A-->>CL: 401 invalid signature / timestamp outside window
-  else rate limit breached
-    A-->>CL: 429 rate limit exceeded
-  else ok
-    A->>A: verify body hash matches canonical\n enforce matchBodyField (publicKey == body.publicKey)
-    A->>A: enforce idempotency via event_consumptions / outbox
+
+  CL->>A: POST /auth/nonce { publicKey }
+  A->>R: store nonce (TTL 600s)
+  A-->>CL: { timestamp, nonce }
+  CL->>CL: build canonical string<br/>(method + path + timestamp + nonce + body hash)
+  CL->>W: signMessage(canonical)
+  W-->>CL: signature
+  CL->>A: signed request<br/>(x-tg-* headers + Idempotency-Key)
+  A->>R: consume nonce (one-time)
+  alt nonce missing or reused
+    A-->>CL: 401 invalid nonce
+  else signature or timestamp invalid
+    A-->>CL: 401 invalid signature
+  else rate limit exceeded
+    A-->>CL: 429 too many attempts
+  else valid
+    A->>A: verify body hash + idempotency
     A-->>CL: 2xx success
   end
 ```
 
 Server rate limits: **10 failed auth attempts/min per public key**,
-**30 failed/min per IP**. After the threshold, legitimate retries are 429 for
-the remainder of the sliding window — see
-[P1: Security / abuse](docs/observability.md#L375-L411)
-runbook.
+**30 failed/min per IP**. After the threshold, even legitimate retries get
+429'd for the rest of the sliding window — see
+[P1: Security / abuse](docs/observability.md#L375-L411) in the runbook.
 
 ## Quick start (local network)
 
@@ -301,66 +263,36 @@ Once it's up:
 
 ## Environment variables
 
-Full list with inline comments lives in [.env.example](.env.example);
-a ready-made testnet config lives in [.env.testnet](.env.testnet)
-(see [testnet section](#running-against-real-stellar-testnet)).
+The full list with inline comments lives in [.env.example](.env.example), and
+a ready-made testnet config lives in [.env.testnet](.env.testnet) (see the
+[testnet section](#running-against-real-stellar-testnet)). Everything below
+is what you actually need to get running; anything not listed here has a safe
+default and is documented inline in `.env.example`.
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| **Network & runtime** | | | |
 | `NETWORK` | | `local` | `local` (standalone Quickstart), `testnet`, or `pubnet`. |
-| `TRUST_PROXY_HOPS` | | `0` | Number of trusted L7 proxies (CDN / load balancer / ingress nginx) directly in front of the app. `0` (default) = no proxy, trust only direct peer IP. Ex: `1` for Cloudflare alone, `2` for Cloudflare + Nginx. **Must be ≥ 1 in any production behind a proxy**, otherwise the signature-auth IP rate-limiter (10 failed sigs/min per public-key, 30/min per IP) can be bypassed by spoofing `X-Forwarded-For`; the structured request logger's `remoteAddress` will also be wrong. |
 | `MOCK_EXTERNALS` | | `false` | Set `true` in local/dev to stub Trustless Work, x402, and webhooks so the full lifecycle works without real credentials. |
-| `TG_ALLOW_CLIENT_NONCE` | | `false` | **Danger** — allows clients to self-generate nonces. Use only as a P0 workaround when Redis is unhealthy; see runbook. |
-| `NODE_ENV` | | — | `development`, `test`, or `production` (affects pino level, error response detail). |
-| **Stellar / RPC** | | | |
+| `NODE_ENV` | | — | `development`, `test`, or `production`. |
 | `STELLAR_RPC_URL` | | Quickstart local | Soroban RPC endpoint. |
 | `STELLAR_HORIZON_URL` | | Quickstart local | Horizon endpoint. |
 | `ADMIN_SECRET` | | auto on `local` | Marketplace admin's Stellar secret key (`S…`). Auto-generated + Friendbot-funded on `local` if unset. |
-| `MARKETPLACE_WALLET` | | `ADMIN_SECRET` pub | Public key that receives listing fees. |
 | `USDC_ISSUER` | ✅ | — | Classic USDC asset issuer (`G…`). The app derives the SAC contract ID from this + `NETWORK`. |
 | `REGISTRY_CONTRACT_ID` | ✅ | — | Set by `npm run deploy:registry`. |
-| **Persistence** | | | |
-| `DATABASE_URL` | ✅ | | Postgres connection string (tasks, bids, outbox, event consumptions, etc.). |
-| `REDIS_URL` | ✅ | | Redis 7+ URL. Used for: nonces, streams, rate limits, backlog sampling. |
-| **Worker / Outbox** | | | |
-| `WORKER_ENABLED` | | `true` | Set `false` to disable the in-process Worker (useful when scaling the worker out-of-process). |
-| `OUTBOX_STREAM_KEY` | | `tg:events` | Redis Stream key name. |
-| `OUTBOX_CONSUMER_GROUP` | | `tg-workers` | Consumer group name for XREADGROUP / XAUTOCLAIM. |
-| `OUTBOX_CONSUMER_NAME` | | `hostname:pid` | Unique consumer name within the group. Autodetect if empty. |
-| `WORKER_POLL_MS` | | `2000` | Interval between worker ticks. Must be ≥ handler worst-case latency to avoid backpressure. |
-| `WORKER_MAX_ATTEMPTS` | | `10` | Max retries per event via `due_retries`; above threshold, event moves to dead-letter (manual triage). |
-| `OUTBOX_BACKLOG_SAMPLE_MS` | | `5000` | Worker tick cadence for sampling Redis Streams XLEN / XPENDING and emitting Prometheus gauges `tg_stream_length`, `tg_stream_pending`, `tg_stream_pending_consumer`. Numeric, min `1000`. Default matches ADR 0001 § Sampling path; raise to `10000`–`15000` for workloads > 1k events/s. |
-| **MPP / listing fees** | | | |
-| `MPP_SECRET_KEY` | ✅ on testnet/pubnet | | HMAC ≥ 32 bytes. Binds `POST /tasks` charge challenges to their contents. Unused on `local`. |
-| **Escrow (Trustless Work)** | | | |
+| `DATABASE_URL` | ✅ | | Postgres connection string. |
+| `REDIS_URL` | ✅ | | Redis 7+ URL — nonces, streams, rate limits, backlog sampling. |
+| `WORKER_ENABLED` | | `true` | Set `false` to disable the in-process Worker (e.g. when running it as a separate process). |
+| `WORKER_POLL_MS` | | `2000` | Interval between worker ticks. |
+| `MPP_SECRET_KEY` | ✅ on testnet/pubnet | | HMAC ≥ 32 bytes, binds `POST /tasks` charge challenges to their contents. Unused on `local`. |
 | `TRUSTLESS_WORK_API_KEY` | ✅ (unless `MOCK_EXTERNALS`) | | API key for bid-collateral escrow + milestone releases. |
-| **Pay-per-result (x402 / OZ Channels)** | | | |
-| `OZ_API_KEY` | (required for result route) | | OZ Channels key. Without it, `GET /executor/tasks/:id/result` isn't mounted — rest of the app still runs. |
-| `X402_NETWORK` | | `stellar:testnet` | CAIP-2 network id passed to x402. |
-| `X402_FACILITATOR_URL` | | OZ testnet | OZ Channels facilitator base URL. |
+| `OZ_API_KEY` | required for the result route | | OZ Channels key. Without it, `GET /executor/tasks/:id/result` simply isn't mounted — the rest of the app still runs. |
 | `EXECUTOR_WALLET` | | marketplace wallet | Stellar public key that receives x402 result payments. |
-| `EXECUTOR_RESULT_PRICE` | | `$0.05` | Price (USDC) for `GET /executor/tasks/:id/result`. Supports `$0.05` format or raw stroops. |
-| **Webhooks** | | | |
-| `WEBHOOK_TIMEOUT_MS` | | `5000` | Hard timeout (AbortController) per HTTP attempt for outbound webhook calls. Inner wrapper retries up to `WEBHOOK_MAX_RETRIES` times and outer worker-level `WORKER_MAX_ATTEMPTS` (default 10) retries further via XAUTOCLAIM. |
-| `WEBHOOK_MAX_RETRIES` | | `3` | Number of retries inside a single worker tick postJson call (>= 0, integer). Default `3` = up to 4 total HTTP attempts per event (1 + 3 retries). Qualifying retryable errors: 5xx, 429, 408, network throw (ECONNRESET/DNS/ETIMEDOUT/AbortError). Non-retryable (fail-fast): 400/401/403/404/410. 429/503 `Retry-After: N` integer header overrides the computed backoff when longer. |
-| `WEBHOOK_BASE_BACKOFF_MS` | | `1000` | Base backoff (ms, >= 50) for the first retry; subsequent retries double exponentially ±50% "Full Jitter" AWS pattern (1s → ~0.5–1.5s → ~1–3s → ~2–6s for default 3 retries). |
+| `EXECUTOR_RESULT_PRICE` | | `$0.05` | Price for `GET /executor/tasks/:id/result`. |
 | `RESULT_PUBLISHED_WEBHOOK_URL` | | — | Optional URL called with POST JSON when an executor publishes a result. |
-| **Safety features — incident response (P1.8A MVP)** | | | |
-| `ESCROW_IMPLEMENTATION` | | `trustlesswork` | Selects the bid-collateral provider. Allowed: `trustlesswork` (SaaS via `@stellar-agent-kit/plugin-trustless-work`), `mock` (in-memory stub for CI/unit tests), `ourown` (TrustGate-native Soroban escrow WASM — fallback exit 15 days from ADR 0002). Enables 15-day exit-strategy toggle from ADR 0002 with zero code changes (swap env var + rolling restart). **⚠️  P0 blocker for `ourown` in any env:** before setting `ourown`, you MUST have (a) deployed `contracts/escrow/` WASM and set `ESCROW_CONTRACT_ID`, (b) published 2 independent external audits, (c) merged TypeScript bindings at `src/contracts/bindings/escrow`, (d) replaced the `OurOwnEscrowContractClientStub` SAFE STUB (which throws on every call today) with the real client using generated bindings. Activating early = 100% of escrow API calls fail with descriptive error (no fund loss, but 100% collateral-path downtime). |
-| `ESCROW_CONTRACT_ID` | ✅ if `ESCROW_IMPLEMENTATION=ourown` | — | Deployed address of `contracts/escrow/Cargo.toml` Soroban WASM. Minimum length 56 chars (Soroban address format). Validation is length-based; a false address will only reveal itself on the first `createEscrow` call. |
-| `ESCROW_TOKEN_CONTRACT` | ✅ if `ESCROW_IMPLEMENTATION=ourown` | — | **Soroban** USDC token contract address (NOT the classic Stellar `USDC_ISSUER` G…56). Kept intentionally separate from `USDC_ISSUER` to avoid classic↔Soroban address-mapping bugs on pubnet. |
-| `ESCROW_CONFISCATE_REQUESTER_BP` | | `7000` (70%) | Basis points of the confiscated collateral that go to the requester (0..=10000). Remainder goes to `MARKETPLACE_WALLET`. Default 7000 = 70/30 split, matching the in-code `DEFAULT_REQUESTER_CONFISCATION_SHARE = 0.7` used for Trustless Work confiscates today. |
-| `PAUSE_NEW_TASKS` | | `false` | When `true`, returns 503 on `POST /tasks` (local dev path) and `POST /tasks/paid` (MPP gate path) — inflight ASSIGNED/COMPLETING tasks still complete normally. |
-| `PAUSE_NEW_BIDS` | | `false` | When `true`, returns 503 on `POST /bids` for any task (doesn't touch task lifecycle). |
-| `PAUSE_WORKER_CONSUMPTION` | | `false` | When `true`, the outbox worker keeps sampling backlog metrics and publishing DB rows → Redis Streams, but **never claims/polls/dispatches any event** (no milestone release, no webhook, no retries). Safe P0 "press stop before deploying patch" toggle. XAUTOCLAIM resumes automatically on toggle off with zero data loss. Increments `tg_worker_tick_total{status="paused"}` each tick. |
-| `EXECUTOR_DENYLIST` | | (empty) | Comma-separated Stellar `G...` addresses. Blocks executors on two surfaces: (1) `POST /bids` (403, before escrow collateral lock) and (2) `POST /tasks/:id/complete` (403, before milestone release for their winning bid). Each hit is logged as structured `warn` with `executorPublicKey`, `taskId`, `reason="denylist_hit"`, `endpoint`. |
-| `TRUSTLESS_WORK_WEBHOOK_PUBLIC_KEY` | | — | (P2 foundation) Ed25519/SPKI public key the SaaS escrow will use to sign incoming dispute/adjustment/chargeback webhooks. Parse-time validation only: `length >= 32` (catches fat-finger typos). The actual `POST /webhooks/trustless-work` endpoint + verify middleware **don't exist yet**; the parser+DI are ready today so the pubkey is available in `SafetyFeatures.trustlessWorkWebhookPublicKey` when we implement them. Logged on boot via `sha256[:8]` preview (never the key itself). |
-| **Smart accounts (scripts only)** | | | |
-| `ACCOUNT_WASM_HASH` | (scripts only) | | WASM hash of a deployed OpenZeppelin smart account (see [Known limitations](#known-limitations)). |
-| `REQUESTER_SECRET` | (scripts only) | | Requester key used by `deploy-smart-account.ts`. |
-| `SMART_ACCOUNT_CONTRACT_ID` | (scripts only) | | Set by the smart-account deploy script. |
-| `SPENDING_LIMIT_POLICY_ADDRESS` | (scripts only) | | Spending-limit policy contract WASM address. |
+| `TRUST_PROXY_HOPS` | | `0` | Number of trusted proxies (CDN / load balancer) in front of the app. **Must be ≥ 1 behind a proxy in production**, or the rate-limiter and request logger read the wrong client IP. |
+| `ESCROW_IMPLEMENTATION` | | `trustlesswork` | Bid-collateral provider: `trustlesswork` (default, SaaS), `mock` (CI/unit tests), or `ourown` (not production-ready yet — see [ADR 0002](docs/adr/0002-on-chain-strategy-registry-immutable-escrow-saas.md) before touching this). |
+| `PAUSE_NEW_TASKS` / `PAUSE_NEW_BIDS` / `PAUSE_WORKER_CONSUMPTION` | | `false` | Incident-response kill switches — see [.env.example](.env.example) for exact behavior of each. |
+| `EXECUTOR_DENYLIST` | | (empty) | Comma-separated Stellar `G...` addresses to block from bidding/completing. |
 
 ### Webhook receiver (local)
 
@@ -384,29 +316,31 @@ npm run test:e2e      # full mocked lifecycle: register → publish → bid → 
 ```
 
 Tests that need real infrastructure (a live local Stellar Quickstart, a real
-Trustless Work key, a real OZ Channels key) are gated with `describe.skip`
-and skip cleanly when that infrastructure isn't present — they aren't flaky,
+Trustless Work key, a real OZ Channels key) are gated with `describe.skip` and
+skip cleanly when that infrastructure isn't present — they aren't flaky,
 they're honest about what they need.
 
 ### Live external tests (skipped by default)
 
 As of the current version, `npm test` reports **11 skipped tests across 2
-suites** (≈9% of the suite). 100% of the skips are gated by the presence of
-real external credentials or running services — **no internal logic is
-skipped**. Internal logic coverage (mock-based) is 111 tests / 31 suites.
+suites** (≈9% of the suite), all gated purely by missing external credentials
+or services — **no internal logic is skipped**. The remaining 111 tests /
+31 suites cover internal logic with mocks.
 
-| # | Skipped test suite | What it exercises | Prerequisites to enable | Notes |
-|---|---|---|---|---|
-| 1 | `src/integration/sorobanRegistry.test.ts` | `registerExecutor()` + `listExecutors()` + `isExecutorRegistered()` calls to a **live deployed Soroban Registry contract** on Stellar testnet/standalone. | 1. Running Stellar Quickstart node (Soroban RPC). 2. `REGISTRY_CONTRACT_ID` env var pointing to a deployed Registry. 3. Admin keypair with XLM for gas. | If you want to re-enable: edit the file, change `describe.skip` → `describe`, set `MOCK_EXTERNALS=false`, and ensure the RPC is reachable. |
-| 2 | `src/integration/trustlessWorkEscrow.test.ts` | End-to-end escrow operations (confiscate/release collateral, milestone triggers) against the **live Trustless Work SaaS API**. | 1. `TRUSTLESS_WORK_API_KEY` env var set and valid. 2. Network egress to `blocks.trustlesswork.com`. 3. `MOCK_EXTERNALS=false`. | See [Escrow strategy](#escrow-provider-strategy) for SaaS vs self-hosted trade-offs. |
-| 3 | `src/integration/stellarSacWithdraw.test.ts` | USDC SAC token mint/transfer/withdraw via a live Stellar asset contract. | 1. Running RPC node. 2. `USDC_ASSET_CONTRACT_ID` env var. 3. Funded test keypair with XLM + USDC. | Mostly used for testnet debugging. |
-| 4 | `src/integration/ozChannelsFacilitator.test.ts` | OZ Channels facilitator payout path with a live facilitator key. | 1. `OZ_API_KEY` env var set. 2. Network egress to OpenZeppelin Channels API. 3. `MOCK_EXTERNALS=false`. | Skip in CI unless you have a stage facilitator key. |
+| # | Skipped suite | Needs |
+|---|---|---|
+| 1 | `src/integration/sorobanRegistry.test.ts` | A live Stellar Quickstart node + `REGISTRY_CONTRACT_ID` + a funded admin keypair. |
+| 2 | `src/integration/trustlessWorkEscrow.test.ts` | A valid `TRUSTLESS_WORK_API_KEY` + egress to `blocks.trustlesswork.com`. |
+| 3 | `src/integration/stellarSacWithdraw.test.ts` | A running RPC node + `USDC_ASSET_CONTRACT_ID` + a funded test keypair. |
+| 4 | `src/integration/ozChannelsFacilitator.test.ts` | A valid `OZ_API_KEY` + egress to the OpenZeppelin Channels API. |
 
-> **CI-safe default**: leave all skips as-is. The baseline (Section 8) already
-> covers the signed-request + metrics + observability surface, and the 111
-> internal tests cover every business logic path with mocks. Run the live
-> suites manually in staging before a mainnet deploy, with an operator
-> reviewing credentials.
+To re-enable one: flip its `describe.skip` to `describe`, set
+`MOCK_EXTERNALS=false`, and provide the credentials above.
+
+> **CI-safe default**: leave all skips as-is. The observability baseline
+> (below) already covers signed-request + metrics behavior, and the 111
+> internal tests cover every business-logic path with mocks. Run the live
+> suites manually in staging before a mainnet deploy.
 
 ## Docker (full stack)
 
@@ -422,9 +356,8 @@ Open:
 - Grafana dashboards (anonymous Viewer): <http://localhost:3001/dashboards>
 
 The `app` service waits for Stellar, Postgres, and Redis to be reachable
-(`scripts/wait-for-it.sh`) before starting, reads secrets from `.env.docker`
-via `env_file`, and overrides network-specific URLs to point at the
-in-Compose-network hostnames.
+before starting, reads secrets from `.env.docker`, and points network URLs at
+the in-Compose-network hostnames.
 
 ## Running against real Stellar testnet
 
@@ -439,33 +372,25 @@ testnet USDC via the [Circle faucet](https://faucet.circle.com) — it's a
 captcha-gated web form. The setup script prints the exact address to paste in.
 
 For signed-request validation against the real stack, run
-`scripts/validate-signed-requests.ts` (uses `NETWORK=testnet` env) or the
+`scripts/validate-signed-requests.ts` (uses `NETWORK=testnet`) or the
 observability baseline's built-in [signed smoke](#observability-baseline-verification)
 check.
 
 ## Signed requests (dApp)
 
-On testnet/pubnet, endpoints that mutate state never accept secret keys
-(`S…`). Instead, the caller proves ownership of a Stellar account by signing
-a canonical payload and sending it in request headers.
+On testnet/pubnet, state-changing endpoints never accept secret keys (`S…`).
+Instead, the caller proves ownership of a Stellar account by signing a
+canonical payload and sending it in request headers. See the
+[Signed request flow](#signed-request-flow-on-testnetpubnet) diagram above for
+the full sequence; this project recommends server-issued one-time nonces via
+`POST /auth/nonce`, signed via Stellar Wallets Kit.
 
-This project recommends server-issued one-time nonces via `POST /auth/nonce`
-and signing via Stellar Wallets Kit. The full sequence diagram is in
-[Signed request flow](#signed-request-flow-on-testnetpubnet).
-
-**Canonical body-hashing guarantee (P1.2):** the built-in `express.json()`
-middleware preserves the exact raw bytes received on the wire via its
-`verify` callback (see `src/app.ts`) and stores them in `(req as any).rawBody`
-**before** `JSON.parse` runs. `signatureAuth.ts` computes the SHA-256 body
-hash from that raw Buffer first, only falling back to `JSON.stringify(req.body)`
-when no raw buffer exists (e.g. custom body parsers — a setup that should be
-avoided on routes requiring signed requests). On the client side, this means
-**you MUST send the exact same bytes you signed** — if you call
-`JSON.stringify(body)` locally, use it for both the signature payload AND the
-HTTP request body verbatim (same whitespace, same field ordering, no `replacer`
-that differs between signature and request submission). Clients using
-`@stellar/stellar-sdk` via the canonical signing helper in
-`scripts/validate-signed-requests.ts` do this correctly out of the box.
+**One rule that matters more than the rest:** you must send the *exact same
+bytes* you signed. The server hashes the raw request body before parsing it,
+so if you build the canonical string from `JSON.stringify(body)` locally, send
+that same string as the HTTP body too — same whitespace, same key order, no
+`replacer`. `scripts/validate-signed-requests.ts` (via `@stellar/stellar-sdk`)
+already does this correctly and is worth copying from.
 
 ### Install (React/Next.js)
 
@@ -551,103 +476,38 @@ async function exampleRegisterExecutor(): Promise<void> {
 
 Notes:
 
-- The signed `path` must match the server route exactly and **exclude query strings**
-  (for example, `/tasks/123/complete`).
-- For endpoints that mutate state, `Idempotency-Key` is **required**.
-- The request body hash is computed from the exact JSON string sent over the
-  wire. Always use the same `bodyText` for hashing and `fetch`.
-- If you want users to pick another wallet, initialize the kit with a
-  different `*_ID` or use the kit's built-in modal and call `kit.setWallet(...)`
-  before `getAddress()`.
+- The signed `path` must match the server route exactly and **exclude query
+  strings** (e.g. `/tasks/123/complete`).
+- `Idempotency-Key` is **required** for any state-mutating call.
+- Always hash and send the *same* `bodyText` string — never re-serialize it
+  between signing and sending.
+- To use a different wallet, pass a different `*_ID` to the kit, or use its
+  built-in modal and call `kit.setWallet(...)` before `getAddress()`.
 
 ### Freighter smoke test (local/Docker)
 
 To validate Freighter signing against a running local stack, use the built-in
-smoke route `POST /auth/signed-smoke`. It also runs automatically as part of
-the [baseline verifier](#observability-baseline-verification).
+route `POST /auth/signed-smoke` — it follows the exact same
+[`tgSignedFetch` pattern](#snippet) above, just against a route that always
+succeeds and echoes `{ ok: true, publicKey }`. It also runs automatically as
+part of the [baseline verifier](#observability-baseline-verification).
 
-Freighter quick checklist:
+Before trying it:
 
 - Install the Freighter browser extension and create/import an account.
-- Ensure Freighter is unlocked and the expected account is active.
-- Allow the dApp's origin in Freighter (connect the site when prompted).
-- If the kit's modal/button is used, confirm you selected Freighter and not
-  another wallet.
-- If you run the API via Docker, your dApp must call the host URL (for
-  example `http://localhost:3000`), not the in-compose hostname.
-
-1) Start Docker (local network + observability recommended):
+- Make sure Freighter is unlocked and the account is active.
+- Allow the dApp's origin in Freighter when prompted.
+- If running the API via Docker, call the host URL (`http://localhost:3000`),
+  not the in-compose hostname.
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.observability.yml up --build -d
 ```
 
-2) From your React app (Freighter via Stellar Wallets Kit), call:
-
-- `POST /auth/nonce` to get `{ timestamp, nonce }`
-- `POST /auth/signed-smoke` with the signature headers and a body like
-  `{ publicKey: "...", hello: "world" }`
-
-Copy/paste example (TypeScript):
-
-```ts
-import { StellarWalletsKit, WalletNetwork, allowAllModules, FREIGHTER_ID } from '@creit.tech/stellar-wallets-kit';
-import { Networks } from '@stellar/stellar-sdk';
-
-const API_BASE_URL = 'http://localhost:3000';
-
-const kit = new StellarWalletsKit({
-  network: WalletNetwork.TESTNET,
-  selectedWalletId: FREIGHTER_ID,
-  modules: allowAllModules(),
-});
-
-async function sha256Hex(text: string): Promise<string> {
-  const bytes = new TextEncoder().encode(text);
-  const digest = await crypto.subtle.digest('SHA-256', bytes);
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
-}
-
-export async function validateSignedSmoke(): Promise<void> {
-  const { address: publicKey } = await kit.getAddress();
-
-  const nonceRes = await fetch(`${API_BASE_URL}/auth/nonce`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ publicKey }),
-  });
-  if (!nonceRes.ok) throw new Error(`nonce failed: ${nonceRes.status} ${await nonceRes.text()}`);
-  const { timestamp, nonce } = (await nonceRes.json()) as { timestamp: number; nonce: string };
-
-  const body = { publicKey, hello: 'world' };
-  const bodyText = JSON.stringify(body);
-  const bodyHash = await sha256Hex(bodyText);
-
-  const canonical = `POST\n/auth/signed-smoke\n${String(timestamp)}\n${nonce}\n${bodyHash}`;
-  const { signedMessage } = await kit.signMessage(canonical, {
-    address: publicKey,
-    networkPassphrase: Networks.TESTNET,
-  });
-
-  const res = await fetch(`${API_BASE_URL}/auth/signed-smoke`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-tg-public-key': publicKey,
-      'x-tg-timestamp': String(timestamp),
-      'x-tg-nonce': nonce,
-      'x-tg-signature': signedMessage,
-    },
-    body: bodyText,
-  });
-
-  const text = await res.text();
-  if (!res.ok) throw new Error(`smoke failed: ${res.status} ${text}`);
-  console.log('smoke ok:', text);
-}
-```
-
-Expected response:
+Then from your React app, call `POST /auth/nonce` to get `{ timestamp, nonce }`,
+sign the canonical string the same way as [the snippet above](#snippet), and
+`POST` it to `/auth/signed-smoke` with a body like
+`{ publicKey: "...", hello: "world" }`. Expected response:
 
 ```json
 { "ok": true, "publicKey": "G..." }
@@ -655,35 +515,31 @@ Expected response:
 
 ### Troubleshooting (Freighter / signed requests)
 
-- **401 `missing signature headers`**: ensure you are sending all headers:
+- **401 `missing signature headers`**: send all four:
   `x-tg-public-key`, `x-tg-timestamp`, `x-tg-nonce`, `x-tg-signature`.
 - **401 `timestamp outside allowed window`**: call `POST /auth/nonce`
-  **immediately before** the signed request and reuse the returned
-  `timestamp`. Server nonces carry their own issue timestamp and reject
-  client-clock drift.
-- **401 `invalid nonce`**: server nonces are one-time (consumed with
-  `GETDEL`). Never reuse the same `{ nonce, timestamp }` for a second
-  request; always fetch a fresh nonce.
+  immediately before the signed request and reuse its returned `timestamp` —
+  don't use your own clock.
+- **401 `invalid nonce`**: nonces are one-time. Never reuse a
+  `{ nonce, timestamp }` pair; fetch a fresh one per request.
 - **401 `public key mismatch for <field>`**: the body field (e.g.
-  `publicKey` / `executorPublicKey`) must equal `x-tg-public-key`.
-- **401 `invalid signature`**: confirm the canonical string is **exactly**:
-  - `${METHOD}\n${PATH}\n${TIMESTAMP}\n${NONCE}\n${SHA256_HEX(bodyText)}`
-  - `PATH` must exclude query string and match the route exactly (e.g.
-    `/auth/signed-smoke`).
-  - `bodyText` must be the exact JSON string you send in `fetch` (same
-    spacing/order). Use the same variable.
-- **429 `rate limit exceeded`**: too many failed auth attempts (IP/public
-  key). Wait a minute and retry, or fix the canonical/payload first.
-- **CORS / preflight issues**: ensure the browser can send custom headers.
-  If you deploy behind a proxy, verify CORS allows `x-tg-*` headers.
+  `publicKey`) must equal `x-tg-public-key`.
+- **401 `invalid signature`**: double-check the canonical string is exactly
+  `${METHOD}\n${PATH}\n${TIMESTAMP}\n${NONCE}\n${SHA256_HEX(bodyText)}`, that
+  `PATH` excludes the query string, and that `bodyText` is the exact string
+  you send in `fetch`.
+- **429 `rate limit exceeded`**: too many failed auth attempts. Wait a minute,
+  or fix the canonical string/payload first.
+- **CORS / preflight issues**: make sure your proxy allows the `x-tg-*`
+  headers.
 
 ## Example: full lifecycle via curl
 
 The sequence diagram in [Full lifecycle sequence](#full-lifecycle-sequence)
 maps to these concrete calls. On `NETWORK=local` you can use the secret-key
-shortcuts below (accepted because no signed-auth middleware is mounted for
-`local`); on `testnet`/`pubnet` wrap each state-mutating call with the
-[tgSignedFetch helper](#snippet) above (or equivalent `x-tg-*` headers).
+shortcuts below (no signed-auth middleware runs for `local`); on
+`testnet`/`pubnet`, wrap each state-mutating call with the
+[tgSignedFetch helper](#snippet) above instead.
 
 ```bash
 # 1. Register an executor
@@ -735,87 +591,34 @@ Every request/response shape is documented interactively at `GET /api-docs`.
 
 ## Observability baseline verification
 
-A single script validates that the whole observability surface (Prometheus
-rules, Grafana dashboards, signed request smoke, and required metrics) works
-end-to-end **before** you consider a deploy healthy. It exists so regressions
-in alerts, dashboards, or the signed-request middleware are caught locally
-instead of in production.
-
-### What it does
-
-`scripts/observability-baseline.sh` runs 6 phases with `set -euo pipefail`
-(any non-zero step aborts the whole run with a clear message):
-
-1. **Preflight parse** — validates `prom/alerts/trustgate-alerts.yml`
-   (groups/rules/expr with a minimal inline YAML parser — no extra deps)
-   and every `grafana/dashboards/*.json` (title required, every panel with
-   `targets` in timeseries/graph/stat/gauge/table panels needs an `expr`
-   field).
-2. **Stack up** — runs
-   `docker compose -f docker-compose.yml -f docker-compose.observability.yml up --build -d`
-   with an isolated `COMPOSE_PROJECT_NAME=trustgate-baseline-<random>` so
-   concurrent runs never clash.
-3. **Health wait** — polls `/health` (app), `/-/ready` (Prometheus) and
-   `/api/health` (Grafana) up to 120×2 s each.
-4. **TypeScript checks** —
-   `npx ts-node --transpile-only scripts/observability-baseline-checks.ts`
-   executes:
-   - `runSignedSmoke` — `Keypair.random()` → `POST /auth/nonce` →
-     canonical string sign → `POST /auth/signed-smoke` → expects
-     `{ ok: true }`.
-   - `runMetricsSanity` — `GET /metrics` must contain all of
-     `tg_auth_nonce_requests_total`, `tg_worker_tick_total`,
-     `tg_outbox_unprocessed`, `tg_stream_pending`,
-     `tg_stream_pending_consumer`.
-   - `runPromSanity` — `/api/v1/targets` needs a healthy `trustgate-app`
-     job; `/api/v1/rules` needs groups `trustgate-auth` /
-     `trustgate-worker`.
-   - `runGrafanaSanity` — `/api/health` reports `database: ok`.
-5. **Curl sanity** — `GET /api/v1/rules` must be `status: success` and
-   include at least one trustgate group.
-6. **Cleanup trap** — `trap cleanup EXIT ERR INT TERM` always tears the
-   project down with `down -v --remove-orphans`. Pass `--keep` to skip
-   cleanup and inspect the stack manually.
-
-### How to run
+One script proves the whole observability surface — Prometheus rules, Grafana
+dashboards, signed-request auth, required metrics — works end-to-end, so
+regressions get caught locally instead of in production.
 
 ```bash
-# Full baseline — fails hard on any step.
-bash scripts/observability-baseline.sh
-
-# Keep the compose stack alive after success, for manual exploration:
-bash scripts/observability-baseline.sh --keep
-
-# Show CLI help:
-scripts/observability-baseline.sh --help
+bash scripts/observability-baseline.sh          # full run, tears itself down after
+bash scripts/observability-baseline.sh --keep   # leave the stack up afterwards to poke around
+scripts/observability-baseline.sh --help        # flags + env-var overrides
 ```
 
-### CLI reference
+It runs 6 phases, aborting immediately on the first failure:
 
-| Flag            | Purpose                                                                                                                                       |
-|-----------------|-----------------------------------------------------------------------------------------------------------------------------------------------|
-| (no flags)      | Default: 6/6 phases → teardown on `EXIT/ERR/INT/TERM`. Used by CI.                                                                            |
-| `--keep`        | Skip teardown on successful exit. The Docker compose project keeps running so you can explore Prom/Grafana/App UIs manually or attach a debugger. Stacks still tear down on `ERR/INT/TERM`. |
-| `-h`, `--help`  | Print usage + env-variable overrides and exit `0`.                                                                                            |
-| unknown flag    | Print usage to stderr and exit `2` (non-zero, CI-blocking).                                                                                   |
+1. **Preflight parse** — lints `prom/alerts/trustgate-alerts.yml` and every
+   `grafana/dashboards/*.json` (titles present, every panel has a PromQL `expr`).
+2. **Stack up** — spins up the full Docker Compose stack in an isolated
+   project name, so parallel runs never clash.
+3. **Health wait** — polls the app, Prometheus, and Grafana health endpoints.
+4. **TypeScript checks** — runs a real signed-request smoke test, checks all
+   required metric names are present on `/metrics`, confirms Prometheus sees
+   the app as a healthy target with the right alert groups loaded, and checks
+   Grafana reports its database as healthy.
+5. **Curl sanity** — double-checks the Prometheus rules API directly.
+6. **Cleanup** — always tears the stack down, success or failure (unless you
+   passed `--keep`).
 
-Optional env overrides (shown in `--help`):
-
-| Variable       | Default value               | Purpose                                  |
-|----------------|-----------------------------|------------------------------------------|
-| `APP_URL`      | `http://127.0.0.1:3000`     | Health + `/metrics` endpoint for the app |
-| `PROM_URL`     | `http://127.0.0.1:9090`     | Prometheus API base URL                  |
-| `GRAFANA_URL`  | `http://127.0.0.1:3001`     | Grafana API base URL                     |
-| `COMPOSE_FILE` | `compose/observability/docker-compose.yml` | Docker compose manifest to spin up |
-
-### Optional: signed-request + metrics self-test (no full Docker stack)
-
-If you only want to validate the signed-request middleware and the required
-metrics payload without starting the full compose stack, use
-`scripts/baseline-selftest.ts`. It starts a minimal in-process Express app
-with `AuthController` + a `/metrics` stub and runs the same smoke/metrics
-checks against a throwaway Redis container bound to a random host port.
-Requires `docker` available locally (for the Redis container only).
+Prefer a lighter check without a full Docker stack? `scripts/baseline-selftest.ts`
+validates just the signed-request middleware and metrics payload against a
+throwaway Redis container:
 
 ```bash
 npx ts-node --transpile-only scripts/baseline-selftest.ts
@@ -825,9 +628,8 @@ npx ts-node --transpile-only scripts/baseline-selftest.ts
 ## Architecture Decision Records
 
 Design choices that are non-obvious or easy to second-guess are captured as
-ADRs under [docs/adr/](docs/adr/).
-When proposing a change to one of these systems, open a new ADR and reference
-it in your PR description.
+ADRs under [docs/adr/](docs/adr/). When proposing a change to one of these
+systems, open a new ADR and reference it in your PR description.
 
 | ID | Title | Status |
 |----|-------|--------|
@@ -835,23 +637,23 @@ it in your PR description.
 | 0002 | [On-chain strategy: Registry Soroban Immutable + Escrow via Trustless Work SaaS](docs/adr/0002-on-chain-strategy-registry-immutable-escrow-saas.md) | ✅ Accepted 2026-08-05 |
 
 To add a new ADR, copy `0001-*.md` as `0003-*.md`, fill in the
-`Context / Decision / Consequences / Alternatives considered` sections,
-and reference it from this table.
+`Context / Decision / Consequences / Alternatives considered` sections, and
+reference it from this table.
 
 ## Glossary
 
 | Term | Meaning in TrustGate |
 |------|----------------------|
-| **Nonce** | Server-issued UUID, stored in Redis with 600 s TTL, consumed with `GETDEL` (one-time). Guards against replay attacks. |
-| **Canonical string** | `METHOD\nPATH\nTIMESTAMP\nNONCE\nSHA256_HEX(bodyText)` — exact bytes signed by the wallet. |
-| **Outbox** | Postgres table `outbox_events`, written in the same txn as business state. Guarantees "event published if and only if state changed." |
-| **Redis Streams / PEL** | Pending Entries List: entries delivered to a consumer in a consumer group but not yet `XACK`ed. `XPENDING` + `XAUTOCLAIM` detect and recover crashed consumers. |
-| **`event_consumptions`** | Postgres table with unique key `(handler_name, event_id)`. Turns at-least-once worker delivery into effectively exactly-once per handler. |
-| **SAC** | Stellar Asset Contract — the CW20-like Soroban contract ID derived automatically from a classic asset's `{ issuer, code }`. Used for USDC here. |
-| **MPP** | Multi-Path Payments — the mechanism the marketplace uses to charge listing fees in USDC atomically; challenge-then-settle with `MPP_SECRET_KEY` on testnet/pubnet. |
+| **Nonce** | Server-issued UUID, stored in Redis with 600s TTL, consumed with `GETDEL` (one-time). Guards against replay attacks. |
+| **Canonical string** | `METHOD\nPATH\nTIMESTAMP\nNONCE\nSHA256_HEX(bodyText)` — the exact bytes signed by the wallet. |
+| **Outbox** | Postgres table `outbox_events`, written in the same transaction as business state. Guarantees "event published if and only if state changed." |
+| **Redis Streams / PEL** | Pending Entries List: entries delivered to a consumer group but not yet `XACK`ed. `XPENDING` + `XAUTOCLAIM` recover crashed consumers. |
+| **`event_consumptions`** | Postgres table keyed by `(handler_name, event_id)`. Turns at-least-once worker delivery into effectively exactly-once per handler. |
+| **SAC** | Stellar Asset Contract — the Soroban contract ID derived automatically from a classic asset's `{ issuer, code }`. Used for USDC here. |
+| **MPP** | Multi-Path Payments — how the marketplace charges listing fees in USDC atomically (challenge-then-settle, via `MPP_SECRET_KEY` on testnet/pubnet). |
 | **x402** | HTTP 402 Payment Required standard — OZ Channels mediate the micro-USDC charge for `GET /executor/tasks/:id/result`. |
 | **Stroop** | Smallest unit of a Stellar asset (1 USDC = 10,000,000 stroops). All on-wire `BIGINT` amounts in Postgres/Redis are stroops. |
-| **Registry** | Soroban contract that acts as the allow-list of eligible executors; only addresses added here can win bids. |
+| **Registry** | Soroban contract acting as the executor allow-list; only addresses added here can win bids. |
 
 ## Known limitations
 
@@ -860,8 +662,8 @@ automated environment. Each is wired with real, working client code — the
 limitation is credentials, not implementation:
 
 - **Trustless Work** (`EscrowService`) needs a real account/API key from
-  [trustlesswork.com](https://blocks.trustlesswork.com). Use `MOCK_EXTERNALS=true`
-  in local/dev to exercise the lifecycle without one.
+  [trustlesswork.com](https://blocks.trustlesswork.com). Use
+  `MOCK_EXTERNALS=true` in local/dev to exercise the lifecycle without one.
 - **OZ Channels** (x402 facilitator) needs a real key from
   [channels.openzeppelin.com](https://channels.openzeppelin.com/testnet/gen).
   Without it, the x402-gated result endpoint is simply not mounted.
